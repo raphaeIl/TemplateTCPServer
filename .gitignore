@@ -1,0 +1,71 @@
+## .NET / Visual Studio .gitignore
+
+# Build output
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+build/
+bld/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# Rider / JetBrains
+.idea/
+*.sln.iml
+
+# VS Code (keep shared settings, ignore local noise)
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Test results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+*.trx
+*.coverage
+*.coveragexml
+coverage/
+
+# NuGet
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+
+# MSBuild / restore artifacts
+project.assets.json
+project.nuget.cache
+*.binlog
+
+# Local config / secrets (never commit credentials or environment overrides)
+appsettings.Local.json
+appsettings.*.Local.json
+*.local.json
+secrets.json
+
+# Runtime / app output
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!-- Class library that uses ASP.NET Core MVC types (controllers). The web host itself
+       lives in the startup project; this just contributes controllers + services. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Serilog.AspNetCore" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TemplateTCPServer.Common\TemplateTCPServer.Common.csproj" />
+    <ProjectReference Include="..\TemplateTCPServer.Data\TemplateTCPServer.Data.csproj" />
+  </ItemGroup>
+
+</Project>
