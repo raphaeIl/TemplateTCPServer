@@ -7,13 +7,9 @@ namespace TemplateTCPServer.GameServer.Services
         int CountAccounts();
     }
 
-    public sealed class ExampleService : IExampleService
+    public sealed class ExampleService(IAccountRepository accounts) : IExampleService
     {
-        private readonly IAccountRepository _accounts;
-
-        public ExampleService(IAccountRepository accounts) => _accounts = accounts;
-
         public int CountAccounts()
-            => _accounts.Count();
+            => accounts.Count();
     }
 }

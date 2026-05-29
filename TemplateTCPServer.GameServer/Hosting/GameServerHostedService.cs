@@ -9,33 +9,19 @@ using TemplateTCPServer.GameServer.Packets;
 
 namespace TemplateTCPServer.GameServer.Hosting
 {
-    public sealed class GameServerHostedService : IHostedService
+    public sealed class GameServerHostedService(
+        PacketDispatcher dispatcher,
+        IPacketSerializer serializer,
+        ConnectionManager connections,
+        IConfiguration config,
+        ILoggerFactory loggerFactory) : IHostedService
     {
-        private readonly PacketDispatcher _dispatcher;
-        private readonly IPacketSerializer _serializer;
-        private readonly ConnectionManager _connections;
-        private readonly ILoggerFactory _loggerFactory;
-        private readonly ILogger<GameServerHostedService> _logger;
-        private readonly int _port;
+        private readonly ILogger<GameServerHostedService> _logger = loggerFactory.CreateLogger<GameServerHostedService>();
+        private readonly int _port = config.GetValue("GameServer:Port", 6969);
 
         private TcpListener? _listener;
         private Thread? _acceptThread;
         private volatile bool _stopping;
-
-        public GameServerHostedService(
-            PacketDispatcher dispatcher,
-            IPacketSerializer serializer,
-            ConnectionManager connections,
-            IConfiguration config,
-            ILoggerFactory loggerFactory)
-        {
-            _dispatcher = dispatcher;
-            _serializer = serializer;
-            _connections = connections;
-            _loggerFactory = loggerFactory;
-            _logger = loggerFactory.CreateLogger<GameServerHostedService>();
-            _port = config.GetValue("GameServer:Port", 6969);
-        }
 
         public Task StartAsync(CancellationToken cancellationToken)
         {
@@ -50,7 +36,7 @@ namespace TemplateTCPServer.GameServer.Hosting
 
         private void AcceptLoop()
         {
-            var connectionLogger = _loggerFactory.CreateLogger<Connection>();
+            var connectionLogger = loggerFactory.CreateLogger<Connection>();
 
             try
             {
@@ -59,7 +45,7 @@ namespace TemplateTCPServer.GameServer.Hosting
                     TcpClient client = _listener!.AcceptTcpClient();
 
                     var connection = new Connection(
-                        client, _dispatcher, _serializer, _connections, connectionLogger);
+                        client, dispatcher, serializer, connections, connectionLogger);
 
                     var thread = new Thread(connection.Run) { IsBackground = true };
                     thread.Start();
@@ -75,8 +61,8 @@ namespace TemplateTCPServer.GameServer.Hosting
         {
             _stopping = true;
 
-            _logger.LogInformation("GameServer stopping; closing {Count} connection(s)", _connections.Count);
-            foreach (var connection in _connections.Connections)
+            _logger.LogInformation("GameServer stopping; closing {Count} connection(s)", connections.Count);
+            foreach (var connection in connections.Connections)
                 connection.Close();
 
             _listener?.Stop();

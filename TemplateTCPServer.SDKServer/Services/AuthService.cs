@@ -7,15 +7,11 @@ namespace TemplateTCPServer.SDKServer.Services
         bool ValidateCredentials(string username, string password);
     }
 
-    public sealed class AuthService : IAuthService
+    public sealed class AuthService(IAccountRepository accounts) : IAuthService
     {
-        private readonly IAccountRepository _accounts;
-
-        public AuthService(IAccountRepository accounts) => _accounts = accounts;
-
         public bool ValidateCredentials(string username, string password)
         {
-            var account = _accounts.GetByUsername(username);
+            var account = accounts.GetByUsername(username);
             if (account is null)
                 return false;
 

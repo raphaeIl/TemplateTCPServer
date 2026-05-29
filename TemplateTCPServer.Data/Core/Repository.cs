@@ -1,10 +1,8 @@
 namespace TemplateTCPServer.Data.Core
 {
-    public class Repository<T> : IRepository<T> where T : class
+    public class Repository<T>(AppDbContext db) : IRepository<T> where T : class
     {
-        protected readonly AppDbContext Db;
-
-        public Repository(AppDbContext db) => Db = db;
+        protected readonly AppDbContext Db = db;
 
         public virtual T? GetById(long id)
             => Db.Set<T>().Find(id);

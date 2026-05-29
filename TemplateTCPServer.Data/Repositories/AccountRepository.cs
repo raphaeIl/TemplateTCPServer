@@ -10,10 +10,8 @@ namespace TemplateTCPServer.Data.Repositories
         int Count();
     }
 
-    public sealed class AccountRepository : Repository<Account>, IAccountRepository
+    public sealed class AccountRepository(AppDbContext db) : Repository<Account>(db), IAccountRepository
     {
-        public AccountRepository(AppDbContext db) : base(db) { }
-
         public Account? GetByUsername(string username)
             => Db.Accounts.SingleOrDefault(a => a.Username == username);
 
