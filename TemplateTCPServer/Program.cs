@@ -1,6 +1,5 @@
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Serilog;
-using Serilog.Events;
 using TemplateTCPServer.Data;
 using TemplateTCPServer.GameServer;
 using TemplateTCPServer.SDKServer;
@@ -17,8 +16,6 @@ namespace TemplateTCPServer
     {
         public static void Main(string[] args)
         {
-            RotateLogFile();
-
             // Bootstrap logger so startup failures before the host is built still log.
             Log.Logger = new LoggerConfiguration()
                 .WriteTo.Console()
@@ -33,8 +30,7 @@ namespace TemplateTCPServer
                 // Serilog as the host logger, reading sinks/levels from configuration.
                 builder.Host.UseSerilog((ctx, services, cfg) => cfg
                     .ReadFrom.Configuration(ctx.Configuration)
-                    .WriteTo.Console()
-                    .WriteTo.File(LogFilePath, restrictedToMinimumLevel: LogEventLevel.Verbose, shared: true));
+                    .WriteTo.Console());
 
                 // Catch captive-dependency mistakes (scoped resolved from root) in dev.
                 builder.Host.UseDefaultServiceProvider((ctx, opt) =>
@@ -72,23 +68,6 @@ namespace TemplateTCPServer
             {
                 Log.CloseAndFlush();
             }
-        }
-
-        private static string LogFilePath =>
-            Path.Combine(Path.GetDirectoryName(AppContext.BaseDirectory)!, "logs", "log.txt");
-
-        /// <summary>Rotates the previous run's log to log-prev.txt (preserved behavior).</summary>
-        private static void RotateLogFile()
-        {
-            var logFilePath = LogFilePath;
-            if (!File.Exists(logFilePath))
-                return;
-
-            var prevLogFilePath = Path.Combine(Path.GetDirectoryName(logFilePath)!, "log-prev.txt");
-            if (File.Exists(prevLogFilePath))
-                File.Delete(prevLogFilePath);
-
-            File.Move(logFilePath, prevLogFilePath);
         }
     }
 }

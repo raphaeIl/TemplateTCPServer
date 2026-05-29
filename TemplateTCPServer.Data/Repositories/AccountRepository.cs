@@ -9,5 +9,8 @@ namespace TemplateTCPServer.Data.Repositories
 
         public Task<Account?> GetByUsernameAsync(string username, CancellationToken ct = default)
             => Db.Accounts.SingleOrDefaultAsync(a => a.Username == username, ct);
+
+        public Task<int> CountAsync(CancellationToken ct = default)
+            => Db.Accounts.CountAsync(ct);
     }
 }

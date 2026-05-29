@@ -9,5 +9,9 @@ namespace TemplateTCPServer.Common.Protocol
     public enum MsgId : ushort
     {
         None = 0,
+
+        // Example ids used by the sample handler. Real protocols replace/extend these.
+        Ping = 1,
+        Pong = 2,
     }
 }

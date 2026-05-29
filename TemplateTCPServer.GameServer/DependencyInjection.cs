@@ -33,6 +33,9 @@ namespace TemplateTCPServer.GameServer
             foreach (var handlerType in registry.HandlerTypes)
                 services.AddScoped(handlerType);
 
+            // Game-side business-logic services (Scoped: they use repositories/DbContext).
+            services.AddScoped<Services.IExampleService, Services.ExampleService>();
+
             // Framing serializer (swap PassthroughPacketSerializer for a real one later).
             services.AddSingleton<IPacketSerializer, PassthroughPacketSerializer>();
 
