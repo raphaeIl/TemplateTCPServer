@@ -1,4 +1,4 @@
-namespace TemplateTCPServer.Data.Repositories
+namespace TemplateTCPServer.Data.Core
 {
     public interface IRepository<T> where T : class
     {

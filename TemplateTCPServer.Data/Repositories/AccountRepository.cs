@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using TemplateTCPServer.Data.Core;
 using TemplateTCPServer.Data.Entities;
 
 namespace TemplateTCPServer.Data.Repositories

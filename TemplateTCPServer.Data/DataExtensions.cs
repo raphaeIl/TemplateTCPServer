@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using TemplateTCPServer.Data.Core;
 using TemplateTCPServer.Data.Repositories;
 
 namespace TemplateTCPServer.Data

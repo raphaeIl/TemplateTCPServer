@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 
-namespace TemplateTCPServer.Data.Repositories
+namespace TemplateTCPServer.Data.Core
 {
     public class Repository<T> : IRepository<T> where T : class
     {
