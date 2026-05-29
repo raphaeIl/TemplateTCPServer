@@ -4,12 +4,6 @@ using TemplateTCPServer.Data.Entities;
 
 namespace TemplateTCPServer.Data.Repositories
 {
-    public interface IAccountRepository : IRepository<Account>
-    {
-        Account? GetByUsername(string username);
-        int Count();
-    }
-
     public sealed class AccountRepository(AppDbContext db) : Repository<Account>(db), IAccountRepository
     {
         public Account? GetByUsername(string username)
@@ -17,5 +11,11 @@ namespace TemplateTCPServer.Data.Repositories
 
         public int Count()
             => Db.Accounts.Count();
+    }
+
+    public interface IAccountRepository : IRepository<Account>
+    {
+        Account? GetByUsername(string username);
+        int Count();
     }
 }

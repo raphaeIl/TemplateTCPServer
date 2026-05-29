@@ -2,11 +2,6 @@ using TemplateTCPServer.Data.Repositories;
 
 namespace TemplateTCPServer.SDKServer.Services
 {
-    public interface IAuthService
-    {
-        bool ValidateCredentials(string username, string password);
-    }
-
     public sealed class AuthService(IAccountRepository accounts) : IAuthService
     {
         public bool ValidateCredentials(string username, string password)
@@ -18,5 +13,10 @@ namespace TemplateTCPServer.SDKServer.Services
             // TODO: replace with a real password hash comparison.
             return account.PasswordHash == password;
         }
+    }
+
+    public interface IAuthService
+    {
+        bool ValidateCredentials(string username, string password);
     }
 }
