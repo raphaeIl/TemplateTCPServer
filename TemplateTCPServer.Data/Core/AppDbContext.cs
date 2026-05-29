@@ -1,7 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using TemplateTCPServer.Data.Entities;
 
-namespace TemplateTCPServer.Data
+namespace TemplateTCPServer.Data.Core
 {
     public class AppDbContext : DbContext
     {

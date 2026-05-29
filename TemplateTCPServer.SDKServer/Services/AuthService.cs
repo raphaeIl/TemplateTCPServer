@@ -2,6 +2,11 @@ using TemplateTCPServer.Data.Repositories;
 
 namespace TemplateTCPServer.SDKServer.Services
 {
+    public interface IAuthService
+    {
+        Task<bool> ValidateCredentialsAsync(string username, string password, CancellationToken ct = default);
+    }
+
     public sealed class AuthService : IAuthService
     {
         private readonly IAccountRepository _accounts;

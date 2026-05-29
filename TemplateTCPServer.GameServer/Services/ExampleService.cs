@@ -2,6 +2,11 @@ using TemplateTCPServer.Data.Repositories;
 
 namespace TemplateTCPServer.GameServer.Services
 {
+    public interface IExampleService
+    {
+        Task<int> CountAccountsAsync(CancellationToken ct = default);
+    }
+
     public sealed class ExampleService : IExampleService
     {
         private readonly IAccountRepository _accounts;
