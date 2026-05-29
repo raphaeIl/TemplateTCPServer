@@ -179,10 +179,9 @@ public interface IRepository<T> where T : class
 }
 
 // Core/Repository.cs
-public class Repository<T> : IRepository<T> where T : class
+public class Repository<T>(AppDbContext db) : IRepository<T> where T : class
 {
-    protected readonly AppDbContext Db;
-    public Repository(AppDbContext db) => Db = db;          // DbContext injected, scoped
+    protected readonly AppDbContext Db = db;   // primary ctor param -> protected field for subclasses
 
     public virtual T? GetById(long id) => Db.Set<T>().Find(id);
     public virtual void Add(T entity)  => Db.Set<T>().Add(entity);
@@ -190,29 +189,29 @@ public class Repository<T> : IRepository<T> where T : class
     public virtual int SaveChanges() => Db.SaveChanges();
 }
 
-// Repositories/AccountRepository.cs  (interface + impl together)
+// Repositories/AccountRepository.cs  (impl + interface together, class first)
+public sealed class AccountRepository(AppDbContext db) : Repository<Account>(db), IAccountRepository
+{
+    public Account? GetByUsername(string username)
+        => Db.Accounts.SingleOrDefault(a => a.Username == username);
+    public int Count() => Db.Accounts.Count();
+}
+
 public interface IAccountRepository : IRepository<Account>
 {
     Account? GetByUsername(string username);
     int Count();
-}
-
-public sealed class AccountRepository : Repository<Account>, IAccountRepository
-{
-    public AccountRepository(AppDbContext db) : base(db) { }
-    public Account? GetByUsername(string username)
-        => Db.Accounts.SingleOrDefault(a => a.Username == username);
-    public int Count() => Db.Accounts.Count();
 }
 ```
 
 All methods use EF Core's **synchronous** APIs (`Find`, `SingleOrDefault`, `Count`,
 `SaveChanges`).
 
-> Convention used in this template: the generic base `IRepository`/`Repository` stay in
+> Conventions used in this template: the generic base `IRepository`/`Repository` stay in
 > separate files; an interface that has a single concrete implementation
 > (`IAccountRepository`/`AccountRepository`, `IExampleService`/`ExampleService`,
-> `IAuthService`/`AuthService`) is kept in one file.
+> `IAuthService`/`AuthService`) is kept in one file, with the class first and the interface
+> after it. Dependencies are injected via **primary constructors** (C# 12).
 
 ### 3.4 DI extension — `AddDataLayer`
 
@@ -295,31 +294,27 @@ public readonly record struct HandlerEntry(Type Type, MethodInfo Method);
 
 ### 4.2 Handlers — attribute on methods, **synchronous, return `void`**
 
-A handler implements the `IPacketHandler` marker, takes its dependencies via the
-constructor, and tags a `(Connection, BasePacket)` method returning `void`:
+A handler implements the `IPacketHandler` marker, takes its dependencies via a **primary
+constructor**, and tags a `(Connection, BasePacket)` method returning `void`:
 
 ```csharp
 public interface IPacketHandler { }   // marker
 
-public sealed class PingHandler : IPacketHandler
+public sealed class PingHandler(
+    IExampleService example,                              // ← constructor injection works
+    ILogger<PingHandler> logger) : IPacketHandler
 {
-    private readonly IExampleService _example;            // ← constructor injection works
-    private readonly ILogger<PingHandler> _logger;
-
-    public PingHandler(IExampleService example, ILogger<PingHandler> logger)
-    { _example = example; _logger = logger; }
-
     [PacketHandler(MsgId.Ping)]
     public void HandlePing(Connection connection, BasePacket packet)
     {
         try
         {
-            int accounts = _example.CountAccounts();      // Service → Repository → DbContext
-            _logger.LogInformation("Ping from {Id} (accounts in db: {Count})", connection.Id, accounts);
+            int accounts = example.CountAccounts();        // Service → Repository → DbContext
+            logger.LogInformation("Ping from {Id} (accounts in db: {Count})", connection.Id, accounts);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Ping from {Id} (db unavailable, replying anyway)", connection.Id);
+            logger.LogWarning(ex, "Ping from {Id} (db unavailable, replying anyway)", connection.Id);
         }
         connection.Send(new RawPacket(MsgId.Pong, ReadOnlyMemory<byte>.Empty));
     }
@@ -338,24 +333,20 @@ equivalent of MVC's per-request controller activation — there is no framework 
 a socket message, so the dispatcher does.
 
 ```csharp
-public sealed class PacketDispatcher
+public sealed class PacketDispatcher(
+    IServiceProvider rootProvider,
+    PacketHandlerRegistry registry,
+    ILogger<PacketDispatcher> logger)
 {
-    private readonly IServiceProvider _rootProvider;
-    private readonly PacketHandlerRegistry _registry;
-    private readonly ILogger<PacketDispatcher> _logger;
-
-    public PacketDispatcher(IServiceProvider rootProvider, PacketHandlerRegistry registry, ILogger<PacketDispatcher> logger)
-    { _rootProvider = rootProvider; _registry = registry; _logger = logger; }
-
     public void Dispatch(Connection connection, BasePacket packet)
     {
-        if (!_registry.TryGet(packet.MsgId, out var entry))
+        if (!registry.TryGet(packet.MsgId, out var entry))
         {
-            _logger.LogWarning("No handler for {MsgId}; packet dropped", packet.MsgId);
+            logger.LogWarning("No handler for {MsgId}; packet dropped", packet.MsgId);
             return;
         }
 
-        using var scope = _rootProvider.CreateScope();           // one DI scope per packet
+        using var scope = rootProvider.CreateScope();            // one DI scope per packet
         var handler = scope.ServiceProvider.GetRequiredService(entry.Type);
         try
         {
@@ -364,7 +355,7 @@ public sealed class PacketDispatcher
         catch (Exception ex)
         {
             var actual = (ex as TargetInvocationException)?.InnerException ?? ex;
-            _logger.LogError(actual, "Handler {Type}.{Method} failed for {MsgId}",
+            logger.LogError(actual, "Handler {Type}.{Method} failed for {MsgId}",
                 entry.Type.Name, entry.Method.Name, packet.MsgId);
         }
         // scope disposed here -> DbContext disposed
@@ -458,10 +449,19 @@ An `IHostedService` (not `BackgroundService`, since the loop is blocking, not as
 client runs its blocking loop on its **own thread**. Only singletons are injected here.
 
 ```csharp
-public sealed class GameServerHostedService : IHostedService
+public sealed class GameServerHostedService(
+    PacketDispatcher dispatcher,
+    IPacketSerializer serializer,
+    ConnectionManager connections,
+    IConfiguration config,
+    ILoggerFactory loggerFactory) : IHostedService      // all injected deps are singletons
 {
-    // ... ctor takes PacketDispatcher, IPacketSerializer, ConnectionManager,
-    //     IConfiguration, ILoggerFactory (all singletons)
+    private readonly ILogger<GameServerHostedService> _logger = loggerFactory.CreateLogger<GameServerHostedService>();
+    private readonly int _port = config.GetValue("GameServer:Port", 6969);
+
+    private TcpListener? _listener;
+    private Thread? _acceptThread;
+    private volatile bool _stopping;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -474,13 +474,13 @@ public sealed class GameServerHostedService : IHostedService
 
     private void AcceptLoop()
     {
-        var connectionLogger = _loggerFactory.CreateLogger<Connection>();
+        var connectionLogger = loggerFactory.CreateLogger<Connection>();
         try
         {
             while (!_stopping)
             {
                 TcpClient client = _listener!.AcceptTcpClient();           // blocking
-                var connection = new Connection(client, _dispatcher, _serializer, _connections, connectionLogger);
+                var connection = new Connection(client, dispatcher, serializer, connections, connectionLogger);
                 new Thread(connection.Run) { IsBackground = true }.Start(); // one thread per connection
             }
         }
@@ -490,7 +490,7 @@ public sealed class GameServerHostedService : IHostedService
     public Task StopAsync(CancellationToken cancellationToken)
     {
         _stopping = true;
-        foreach (var connection in _connections.Connections) connection.Close();
+        foreach (var connection in connections.Connections) connection.Close();
         _listener?.Stop();
         return Task.CompletedTask;
     }
@@ -503,35 +503,40 @@ public sealed class GameServerHostedService : IHostedService
 connection's thread reading frames and dispatching them sequentially.
 
 ```csharp
-public sealed class Connection
+public sealed class Connection(
+    TcpClient client,
+    PacketDispatcher dispatcher,
+    IPacketSerializer serializer,
+    ConnectionManager manager,
+    ILogger logger)
 {
-    // ctor: TcpClient, PacketDispatcher, IPacketSerializer, ConnectionManager, ILogger
-    public string Id { get; }
+    private readonly NetworkStream _stream = client.GetStream();
+    public string Id { get; } = client.Client.RemoteEndPoint!.ToString()!;
 
     public void Run()
     {
-        _manager.Add(this);
-        _logger.LogInformation("{Id} connected", Id);
+        manager.Add(this);
+        logger.LogInformation("{Id} connected", Id);
         try
         {
             while (true)
             {
-                BasePacket? packet = PacketFramer.Read(_stream, _serializer);   // blocking
+                BasePacket? packet = PacketFramer.Read(_stream, serializer);    // blocking
                 if (packet is null) break;                                      // peer closed
-                _dispatcher.Dispatch(this, packet);                             // per-packet scope
+                dispatcher.Dispatch(this, packet);                             // per-packet scope
             }
         }
-        catch (Exception ex) { _logger.LogWarning(ex, "{Id} read loop ended", Id); }
+        catch (Exception ex) { logger.LogWarning(ex, "{Id} read loop ended", Id); }
         finally
         {
-            _manager.Remove(this);
-            _client.Close();
-            _logger.LogInformation("{Id} disconnected", Id);
+            manager.Remove(this);
+            client.Close();
+            logger.LogInformation("{Id} disconnected", Id);
         }
     }
 
-    public void Send(BasePacket packet) => PacketFramer.Write(_stream, _serializer, packet);
-    public void Close() => _client.Close();
+    public void Send(BasePacket packet) => PacketFramer.Write(_stream, serializer, packet);
+    public void Close() => client.Close();
 }
 ```
 
