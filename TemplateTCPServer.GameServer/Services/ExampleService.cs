@@ -6,8 +6,6 @@ namespace TemplateTCPServer.GameServer.Services
     {
         private readonly IAccountRepository _accounts;
 
-        // Repository injected by DI -> resolved from the per-packet scope -> wraps the
-        // scoped AppDbContext. This is the Service -> Repository -> DbContext layering.
         public ExampleService(IAccountRepository accounts) => _accounts = accounts;
 
         public Task<int> CountAccountsAsync(CancellationToken ct = default)

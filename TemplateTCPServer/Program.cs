@@ -6,17 +6,10 @@ using TemplateTCPServer.SDKServer;
 
 namespace TemplateTCPServer
 {
-    /// <summary>
-    /// The single composition root for the whole application. One generic host runs both
-    /// the SDK HTTP pipeline (login) and the GameServer TCP listener (the main server, as a
-    /// hosted background service), sharing one DI container, one EF Core context
-    /// registration, one logger, and one configuration.
-    /// </summary>
     internal static class Program
     {
         public static void Main(string[] args)
         {
-            // Bootstrap logger so startup failures before the host is built still log.
             Log.Logger = new LoggerConfiguration()
                 .WriteTo.Console()
                 .CreateBootstrapLogger();
@@ -27,7 +20,6 @@ namespace TemplateTCPServer
 
                 var builder = WebApplication.CreateBuilder(args);
 
-                // Serilog as the host logger, reading sinks/levels from configuration.
                 builder.Host.UseSerilog((ctx, services, cfg) => cfg
                     .ReadFrom.Configuration(ctx.Configuration)
                     .WriteTo.Console());
@@ -39,7 +31,6 @@ namespace TemplateTCPServer
                     opt.ValidateOnBuild = ctx.HostingEnvironment.IsDevelopment();
                 });
 
-                // Preserved from the original SDKServer (sync IO for the legacy controller paths).
                 builder.Services.Configure<KestrelServerOptions>(o => o.AllowSynchronousIO = true);
 
                 // ---- shared data layer (EF Core + Postgres) ----
@@ -57,7 +48,6 @@ namespace TemplateTCPServer
                 app.UseAuthorization();
                 app.MapControllers();
 
-                // Runs the Kestrel HTTP server AND the GameServer TCP listener together.
                 app.Run();
             }
             catch (Exception ex)

@@ -2,21 +2,11 @@ using System.Buffers.Binary;
 
 namespace TemplateTCPServer.Common.Protocol
 {
-    /// <summary>
-    /// Reads and writes length-prefixed frames on a stream. Wire format:
-    /// <code>[4-byte big-endian payload length][2-byte big-endian MsgId][payload bytes]</code>
-    /// This replaces the old <c>BinaryReader.ReadString()</c> + <c>DataAvailable</c> busy
-    /// loop: a frame is fully assembled before it is handed to the dispatcher.
-    /// </summary>
+    // Wire format: [4-byte big-endian payload length][2-byte big-endian MsgId][payload].
     public static class PacketFramer
     {
-        /// <summary>Header is a 4-byte length followed by a 2-byte MsgId.</summary>
         public const int HeaderLength = sizeof(int) + sizeof(ushort);
 
-        /// <summary>
-        /// Reads one complete frame from <paramref name="stream"/> and deserializes it.
-        /// Returns <c>null</c> when the stream reaches end-of-stream cleanly (peer closed).
-        /// </summary>
         public static async Task<BasePacket?> ReadAsync(
             Stream stream,
             IPacketSerializer serializer,
@@ -39,7 +29,6 @@ namespace TemplateTCPServer.Common.Protocol
             return serializer.Deserialize(msgId, payload);
         }
 
-        /// <summary>Serializes a packet and writes one complete frame to the stream.</summary>
         public static async Task WriteAsync(
             Stream stream,
             IPacketSerializer serializer,
@@ -58,11 +47,7 @@ namespace TemplateTCPServer.Common.Protocol
             await stream.FlushAsync(ct);
         }
 
-        /// <summary>
-        /// Fills <paramref name="buffer"/> completely. Returns <c>false</c> if the stream
-        /// is at end-of-stream before any byte is read (clean close); throws if it ends
-        /// part-way through.
-        /// </summary>
+        // Returns false on a clean EOF at a frame boundary; throws if the stream ends mid-frame.
         private static async Task<bool> ReadExactlyOrEofAsync(
             Stream stream, Memory<byte> buffer, CancellationToken ct)
         {
@@ -72,7 +57,7 @@ namespace TemplateTCPServer.Common.Protocol
                 int n = await stream.ReadAsync(buffer[read..], ct);
                 if (n == 0)
                 {
-                    if (read == 0) return false;      // clean EOF on a frame boundary
+                    if (read == 0) return false;
                     throw new EndOfStreamException("Stream ended mid-frame.");
                 }
                 read += n;

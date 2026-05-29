@@ -5,13 +5,8 @@ using TemplateTCPServer.Data.Repositories;
 
 namespace TemplateTCPServer.Data
 {
-    public static class DependencyInjection
+    public static class DataExtensions
     {
-        /// <summary>
-        /// Registers the EF Core context (Postgres) and repositories. Both the GameServer
-        /// (per-packet scope) and the SDKServer (per-request scope) resolve these scoped
-        /// services from their respective scopes.
-        /// </summary>
         public static IServiceCollection AddDataLayer(
             this IServiceCollection services, IConfiguration config)
         {

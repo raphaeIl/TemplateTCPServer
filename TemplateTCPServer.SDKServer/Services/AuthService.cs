@@ -2,11 +2,6 @@ using TemplateTCPServer.Data.Repositories;
 
 namespace TemplateTCPServer.SDKServer.Services
 {
-    /// <summary>
-    /// Scoped service: depends on the scoped <see cref="IAccountRepository"/> which depends
-    /// on the scoped <c>AppDbContext</c>. Demonstrates the Service -&gt; Repository -&gt;
-    /// DbContext layering. Password handling is intentionally left as a stub.
-    /// </summary>
     public sealed class AuthService : IAuthService
     {
         private readonly IAccountRepository _accounts;

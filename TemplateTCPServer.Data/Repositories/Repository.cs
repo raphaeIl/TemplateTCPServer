@@ -2,10 +2,6 @@ using Microsoft.EntityFrameworkCore;
 
 namespace TemplateTCPServer.Data.Repositories
 {
-    /// <summary>
-    /// Generic EF Core repository base. Wraps the scoped <see cref="AppDbContext"/>.
-    /// Concrete repositories inherit this and add entity-specific queries.
-    /// </summary>
     public class Repository<T> : IRepository<T> where T : class
     {
         protected readonly AppDbContext Db;

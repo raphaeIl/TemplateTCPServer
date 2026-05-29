@@ -6,20 +6,8 @@ using TemplateTCPServer.GameServer.Services;
 
 namespace TemplateTCPServer.GameServer.Handlers
 {
-    /// <summary>
-    /// Example packet handler &mdash; the TCP-side analog of an MVC controller.
-    ///
-    /// It is discovered by the <see cref="PacketHandlerRegistry"/> (via the
-    /// <see cref="PacketHandlerAttribute"/>), registered in DI as Scoped, and resolved by
-    /// the <see cref="PacketDispatcher"/> inside a fresh per-packet scope. Because of that,
-    /// its constructor dependencies are injected just like a controller's:
-    /// <see cref="IExampleService"/> (scoped) -&gt; <c>IAccountRepository</c> (scoped) -&gt;
-    /// <c>AppDbContext</c> (scoped), all living for exactly this one packet.
-    ///
-    /// To add your own handler: implement <see cref="IPacketHandler"/>, take whatever
-    /// services you need in the constructor, and put <c>[PacketHandler(MsgId.X)]</c> on a
-    /// method with the signature <c>(Connection, BasePacket)</c> returning void or Task.
-    /// </summary>
+    // Example handler. Implement IPacketHandler, take dependencies in the constructor, and
+    // tag a (Connection, BasePacket) method with [PacketHandler(MsgId)].
     public sealed class PingHandler : IPacketHandler
     {
         private readonly IExampleService _example;
@@ -34,8 +22,7 @@ namespace TemplateTCPServer.GameServer.Handlers
         [PacketHandler(MsgId.Ping)]
         public async Task HandlePing(Connection connection, BasePacket packet)
         {
-            // Exercise the Service -> Repository -> DbContext chain. Guarded so the sample
-            // still responds even if no database is configured/reachable.
+            // Guarded so the sample still replies when no database is configured.
             try
             {
                 int accounts = await _example.CountAccountsAsync();

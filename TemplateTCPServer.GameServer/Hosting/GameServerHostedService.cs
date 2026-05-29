@@ -9,15 +9,6 @@ using TemplateTCPServer.GameServer.Packets;
 
 namespace TemplateTCPServer.GameServer.Hosting
 {
-    /// <summary>
-    /// The main TCP server, run as a hosted background service inside the shared generic
-    /// host. Owns the <see cref="TcpListener"/>, accepts clients, and hands each to its own
-    /// <see cref="Connection"/> read loop. Replaces the old singleton <c>GameServer</c> +
-    /// <c>Task.Run</c>; the host now owns its lifecycle and shuts it down via the token.
-    ///
-    /// Only singletons are injected here (dispatcher, serializer, manager) &mdash; never a
-    /// scoped service, which would be a captive dependency.
-    /// </summary>
     public sealed class GameServerHostedService : BackgroundService
     {
         private readonly PacketDispatcher _dispatcher;
@@ -61,13 +52,11 @@ namespace TemplateTCPServer.GameServer.Hosting
                     var connection = new Connection(
                         client, _dispatcher, _serializer, _connections, connectionLogger);
 
-                    // Fire-and-forget: each connection runs its own loop concurrently.
                     _ = connection.RunAsync(stoppingToken);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                // normal shutdown
             }
             finally
             {
