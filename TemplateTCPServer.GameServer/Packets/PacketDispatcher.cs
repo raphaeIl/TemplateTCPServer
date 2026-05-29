@@ -21,7 +21,7 @@ namespace TemplateTCPServer.GameServer.Packets
             _logger = logger;
         }
 
-        public async Task DispatchAsync(Connection connection, BasePacket packet, CancellationToken ct)
+        public void Dispatch(Connection connection, BasePacket packet)
         {
             if (!_registry.TryGet(packet.MsgId, out var entry))
             {
@@ -30,14 +30,12 @@ namespace TemplateTCPServer.GameServer.Packets
             }
 
             // One DI scope per packet; the handler and its scoped deps live for this packet only.
-            await using var scope = _rootProvider.CreateAsyncScope();
+            using var scope = _rootProvider.CreateScope();
             var handler = scope.ServiceProvider.GetRequiredService(entry.Type);
 
             try
             {
-                object? result = entry.Method.Invoke(handler, new object[] { connection, packet });
-                if (result is Task task)
-                    await task;
+                entry.Method.Invoke(handler, new object[] { connection, packet });
             }
             catch (Exception ex)
             {

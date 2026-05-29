@@ -32,24 +32,21 @@ namespace TemplateTCPServer.GameServer.Networking
             Id = client.Client.RemoteEndPoint!.ToString()!;
         }
 
-        public async Task RunAsync(CancellationToken ct)
+        public void Run()
         {
             _manager.Add(this);
             _logger.LogInformation("{Id} connected", Id);
 
             try
             {
-                while (!ct.IsCancellationRequested)
+                while (true)
                 {
-                    BasePacket? packet = await PacketFramer.ReadAsync(_stream, _serializer, ct);
+                    BasePacket? packet = PacketFramer.Read(_stream, _serializer);
                     if (packet is null)
                         break;
 
-                    await _dispatcher.DispatchAsync(this, packet, ct);
+                    _dispatcher.Dispatch(this, packet);
                 }
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
             }
             catch (Exception ex)
             {
@@ -63,8 +60,8 @@ namespace TemplateTCPServer.GameServer.Networking
             }
         }
 
-        public Task SendAsync(BasePacket packet, CancellationToken ct = default)
-            => PacketFramer.WriteAsync(_stream, _serializer, packet, ct);
+        public void Send(BasePacket packet)
+            => PacketFramer.Write(_stream, _serializer, packet);
 
         public void Close() => _client.Close();
     }

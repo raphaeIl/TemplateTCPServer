@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+using System.Linq;
 using TemplateTCPServer.Data.Core;
 using TemplateTCPServer.Data.Entities;
 
@@ -6,18 +6,18 @@ namespace TemplateTCPServer.Data.Repositories
 {
     public interface IAccountRepository : IRepository<Account>
     {
-        Task<Account?> GetByUsernameAsync(string username, CancellationToken ct = default);
-        Task<int> CountAsync(CancellationToken ct = default);
+        Account? GetByUsername(string username);
+        int Count();
     }
 
     public sealed class AccountRepository : Repository<Account>, IAccountRepository
     {
         public AccountRepository(AppDbContext db) : base(db) { }
 
-        public Task<Account?> GetByUsernameAsync(string username, CancellationToken ct = default)
-            => Db.Accounts.SingleOrDefaultAsync(a => a.Username == username, ct);
+        public Account? GetByUsername(string username)
+            => Db.Accounts.SingleOrDefault(a => a.Username == username);
 
-        public Task<int> CountAsync(CancellationToken ct = default)
-            => Db.Accounts.CountAsync(ct);
+        public int Count()
+            => Db.Accounts.Count();
     }
 }

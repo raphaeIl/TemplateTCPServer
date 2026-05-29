@@ -2,9 +2,9 @@ namespace TemplateTCPServer.Data.Core
 {
     public interface IRepository<T> where T : class
     {
-        Task<T?> GetByIdAsync(long id, CancellationToken ct = default);
-        Task AddAsync(T entity, CancellationToken ct = default);
+        T? GetById(long id);
+        void Add(T entity);
         void Remove(T entity);
-        Task<int> SaveChangesAsync(CancellationToken ct = default);
+        int SaveChanges();
     }
 }

@@ -20,12 +20,12 @@ namespace TemplateTCPServer.GameServer.Handlers
         }
 
         [PacketHandler(MsgId.Ping)]
-        public async Task HandlePing(Connection connection, BasePacket packet)
+        public void HandlePing(Connection connection, BasePacket packet)
         {
             // Guarded so the sample still replies when no database is configured.
             try
             {
-                int accounts = await _example.CountAccountsAsync();
+                int accounts = _example.CountAccounts();
                 _logger.LogInformation("Ping from {Id} (accounts in db: {Count})", connection.Id, accounts);
             }
             catch (Exception ex)
@@ -33,7 +33,7 @@ namespace TemplateTCPServer.GameServer.Handlers
                 _logger.LogWarning(ex, "Ping from {Id} (db unavailable, replying anyway)", connection.Id);
             }
 
-            await connection.SendAsync(new RawPacket(MsgId.Pong, ReadOnlyMemory<byte>.Empty));
+            connection.Send(new RawPacket(MsgId.Pong, ReadOnlyMemory<byte>.Empty));
         }
     }
 }

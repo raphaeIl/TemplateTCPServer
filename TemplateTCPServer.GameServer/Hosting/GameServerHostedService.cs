@@ -9,7 +9,7 @@ using TemplateTCPServer.GameServer.Packets;
 
 namespace TemplateTCPServer.GameServer.Hosting
 {
-    public sealed class GameServerHostedService : BackgroundService
+    public sealed class GameServerHostedService : IHostedService
     {
         private readonly PacketDispatcher _dispatcher;
         private readonly IPacketSerializer _serializer;
@@ -19,6 +19,8 @@ namespace TemplateTCPServer.GameServer.Hosting
         private readonly int _port;
 
         private TcpListener? _listener;
+        private Thread? _acceptThread;
+        private volatile bool _stopping;
 
         public GameServerHostedService(
             PacketDispatcher dispatcher,
@@ -35,43 +37,50 @@ namespace TemplateTCPServer.GameServer.Hosting
             _port = config.GetValue("GameServer:Port", 6969);
         }
 
-        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        public Task StartAsync(CancellationToken cancellationToken)
         {
             _listener = new TcpListener(IPAddress.Any, _port);
             _listener.Start();
             _logger.LogInformation("GameServer listening on port {Port}", _port);
 
+            _acceptThread = new Thread(AcceptLoop) { IsBackground = true, Name = "GameServer-Accept" };
+            _acceptThread.Start();
+            return Task.CompletedTask;
+        }
+
+        private void AcceptLoop()
+        {
             var connectionLogger = _loggerFactory.CreateLogger<Connection>();
 
             try
             {
-                while (!stoppingToken.IsCancellationRequested)
+                while (!_stopping)
                 {
-                    TcpClient client = await _listener.AcceptTcpClientAsync(stoppingToken);
+                    TcpClient client = _listener!.AcceptTcpClient();
 
                     var connection = new Connection(
                         client, _dispatcher, _serializer, _connections, connectionLogger);
 
-                    _ = connection.RunAsync(stoppingToken);
+                    var thread = new Thread(connection.Run) { IsBackground = true };
+                    thread.Start();
                 }
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            catch (SocketException) when (_stopping)
             {
-            }
-            finally
-            {
-                _listener.Stop();
+                // listener stopped during shutdown
             }
         }
 
-        public override async Task StopAsync(CancellationToken cancellationToken)
+        public Task StopAsync(CancellationToken cancellationToken)
         {
+            _stopping = true;
+
             _logger.LogInformation("GameServer stopping; closing {Count} connection(s)", _connections.Count);
             foreach (var connection in _connections.Connections)
                 connection.Close();
 
             _listener?.Stop();
-            await base.StopAsync(cancellationToken);
+            return Task.CompletedTask;
         }
     }
 }

@@ -1,76 +1,60 @@
-# TCP Server Architecture Plan — DI + EF Core (Postgres)
+# TCP Server Architecture — DI + EF Core (Postgres)
 
-> Goal: take the current raw-socket `GameServer` + ASP.NET `SDKServer` template and put
-> them both on the **ASP.NET Core Generic Host** so that packet handlers get the same
-> `Controller → Service → Repository → DbContext` dependency-injection story as a normal
-> ASP.NET app — but driven by TCP packets instead of HTTP requests.
+> A TCP game server and an HTTP login server sharing **one ASP.NET Core Generic Host**, so
+> packet handlers get the same `Controller → Service → Repository → DbContext`
+> dependency-injection story as a normal ASP.NET app — driven by TCP packets instead of
+> HTTP requests.
 >
-> Decisions locked in for this plan:
-> - **Host model:** single Generic Host; the TCP listener runs as an `IHostedService`/`BackgroundService`.
+> Design decisions in effect:
+> - **Host model:** a single Generic Host (`WebApplication`); the TCP listener runs as an `IHostedService`.
+> - **Execution model:** **fully synchronous, thread-per-connection.** No `async`/`await`, no `Task<T>`, no `CancellationToken` on the app's own methods. Chosen because this is a low-population private server where the simplicity is worth the one parked thread per connected client. (See §7 for the trade-off.)
 > - **DI scoping:** one `IServiceScope` **per packet** (the analog of an HTTP request scope).
-> - **Handler resolution:** keep `[PacketHandler(MsgId)]` attribute scanning to build a routing map at startup, but **register handlers in DI** and resolve them per-scope (no `Activator.CreateInstance`).
-> - **Data layer:** new shared `TemplateTCPServer.Data` project, referenced by both servers.
+> - **Handler resolution:** `[PacketHandler(MsgId)]` attribute scanning builds a routing map at startup, but handlers are **registered in DI** and resolved per-scope (no `Activator.CreateInstance`).
 > - **Layering:** `Handler → Service → Repository → DbContext`.
 > - **SDKServer** = login/HTTP only. **GameServer** = the main server (the TCP side).
 
 ---
 
-## 1. Where we are today
-
-| Project | Type | Role | DI? |
-|---|---|---|---|
-| `TemplateTCPServer` | Exe | Entry point. Configures Serilog, then `Task.Run(GameServer.Start)` + `SDKServer.Main(args)`. | No |
-| `TemplateTCPServer.GameServer` | Library | Raw `TcpListener`, manual `Connection` read loop. Singleton `GameServer.Instance`, singleton `PacketHandlerFactory` with reflection + `Activator.CreateInstance`. | No |
-| `TemplateTCPServer.SDKServer` | Web (`Sdk.Web`) | ASP.NET Core. Login/config HTTP endpoints. Already has `EFCore.Design`. | Yes (its own `WebApplication`) |
-
-Problems for the target design:
-
-1. **Two entry points / no shared container.** `Program.Main` runs the GameServer on a thread and then hands control to `SDKServer.Main`, which builds its *own* `WebApplication`. There is no single DI container; the GameServer can't resolve services.
-2. **Singletons + reflection instantiation.** `GameServer.Instance` and `PacketHandlerFactory` (Singleton) create handler instances via `Activator.CreateInstance`, so handlers **cannot take constructor dependencies** (`IUserService`, repositories, `DbContext`). This is the core thing blocking the layered DI pattern.
-3. **No per-request lifetime.** EF Core `DbContext` must be short-lived and is not thread-safe. A TCP connection is long-lived and multiplexes many messages, so we need an explicit scope boundary — one per packet.
-4. **`Connection` is hand-rolled** and reads raw `BinaryReader.ReadString()`; there is no packet framing/`MsgId` dispatch wired to the factory yet.
-
----
-
-## 2. Target project layout
+## 1. Project layout
 
 ```
 TemplateTCPServer.sln
 │
-├── TemplateTCPServer            (Exe — composition root / host bootstrap)
-│     Program.cs                 → builds ONE Generic Host, wires all DI, runs it
+├── TemplateTCPServer            (Exe, Sdk.Web — composition root / host bootstrap)
+│     Program.cs                 → builds ONE host, wires all DI, runs it
+│     appsettings.json           → Postgres conn string, GameServer:Port, Kestrel, Serilog
 │
-├── TemplateTCPServer.Common     (NEW, Library — protocol + cross-cutting)
-│     Protocol/MsgId.cs
-│     Protocol/BasePacket.cs
-│     Protocol/IPacketSerializer.cs
-│     Utils/...                  (move Singleton<T> here only if still needed elsewhere)
+├── TemplateTCPServer.Common     (Library — protocol, dependency-free)
+│     Protocol/MsgId.cs                    → enum (None, Ping, Pong)
+│     Protocol/BasePacket.cs               → abstract envelope (MsgId + payload)
+│     Protocol/RawPacket.cs                → minimal concrete packet
+│     Protocol/IPacketSerializer.cs        → bytes ⇄ BasePacket body
+│     Protocol/PassthroughPacketSerializer.cs → default no-op serializer
+│     Protocol/PacketFramer.cs             → length-prefixed frame read/write (sync)
 │
-├── TemplateTCPServer.Data       (NEW, Library — EF Core persistence)
-│     Entities/User.cs, ...
-│     AppDbContext.cs
-│     Repositories/IUserRepository.cs, UserRepository.cs
-│     Repositories/IRepository.cs (generic base, optional)
-│     UnitOfWork/IUnitOfWork.cs, UnitOfWork.cs (optional)
-│     DependencyInjection.cs     → AddDataLayer(this IServiceCollection, config)
-│     Migrations/                (EF migrations live here; Data is the migrations assembly)
+├── TemplateTCPServer.Data       (Library — EF Core persistence)
+│     Core/AppDbContext.cs
+│     Core/IRepository.cs, Core/Repository.cs   → generic repo base
+│     Entities/Account.cs                        → sample entity
+│     Repositories/AccountRepository.cs          → IAccountRepository + impl (one file)
+│     DataExtensions.cs                          → AddDataLayer(this IServiceCollection, config)
 │
 ├── TemplateTCPServer.GameServer (Library — the MAIN TCP server)
-│     Hosting/GameServerHostedService.cs   → BackgroundService, owns TcpListener
-│     Networking/Connection.cs             → per-connection read loop (no singletons)
+│     Hosting/GameServerHostedService.cs   → IHostedService, owns TcpListener
+│     Networking/Connection.cs             → per-connection blocking read loop (not in DI)
 │     Networking/ConnectionManager.cs      → tracks live connections (singleton)
-│     Packets/PacketHandlerAttribute.cs    → (kept, improved namespace)
-│     Packets/IPacketHandler.cs            → marker + base
-│     Packets/PacketDispatcher.cs          → replaces PacketHandlerFactory; uses DI scopes
-│     Packets/PacketHandlerRegistry.cs     → builds MsgId→Type map at startup
-│     Handlers/...                         → concrete handlers (the "controllers")
-│     Services/...                         → game business logic (the "services")
-│     DependencyInjection.cs               → AddGameServer(this IServiceCollection)
+│     Packets/PacketHandlerAttribute.cs    → [PacketHandler(MsgId)]
+│     Packets/IPacketHandler.cs            → marker interface
+│     Packets/PacketHandlerRegistry.cs     → builds MsgId→(type,method) map at startup
+│     Packets/PacketDispatcher.cs          → resolves handler from a per-packet DI scope
+│     Handlers/PingHandler.cs              → example handler ("controller")
+│     Services/ExampleService.cs           → IExampleService + impl (example "service")
+│     GameServerExtensions.cs              → AddGameServer(this IServiceCollection)
 │
-└── TemplateTCPServer.SDKServer  (Web — login/HTTP only)
+└── TemplateTCPServer.SDKServer  (Library — login/HTTP only, no Main)
       Controllers/SDKController.cs
-      Services/IAuthService.cs, AuthService.cs   (login logic)
-      DependencyInjection.cs                      → AddSdkServer(...)
+      Services/AuthService.cs              → IAuthService + impl (one file)
+      SdkServerExtensions.cs               → AddSdkServer(this IServiceCollection)
 ```
 
 Reference graph (no cycles):
@@ -83,84 +67,76 @@ TemplateTCPServer (Exe)
 GameServer/SDKServer/Data ──> Common
 ```
 
+Each layer's DI registrations live in that layer's own `*Extensions` class (the .NET
+convention, e.g. `MvcServiceCollectionExtensions`). `Program.cs` calls the three
+`Add*` methods explicitly.
+
 ---
 
-## 3. The big idea: one Generic Host, TCP listener as a hosted service
+## 2. One Generic Host, TCP listener as a hosted service
 
-ASP.NET Core's DI, configuration, logging, and `IHostedService` lifecycle all live on
-the **Generic Host** (`Microsoft.Extensions.Hosting`). A `WebApplication` *is* a generic
-host with HTTP layered on top. So we build a single host that:
+A `WebApplication` *is* a Generic Host with HTTP layered on top. We build a single host
+that registers both:
 
-- registers the **HTTP pipeline** (SDKServer controllers) — for login, and
-- registers the **TCP listener** as a `BackgroundService` (GameServer) — the main server,
+- the **HTTP pipeline** (SDKServer controllers) — for login, and
+- the **TCP listener** as an `IHostedService` (GameServer) — the main server,
 
-…both sharing the **same `IServiceProvider`**, the same `AppDbContext` registration, the
-same Serilog logger, and the same `appsettings.json`.
+…sharing the **same `IServiceProvider`**, the same `AppDbContext` registration, the same
+Serilog logger, and the same `appsettings.json`.
 
-### 3.1 `Program.cs` (composition root)
+### 2.1 `Program.cs` (composition root)
 
 ```csharp
-using Microsoft.AspNetCore.Server.Kestrel.Core;
-using Serilog;
-using TemplateTCPServer.Data;
-using TemplateTCPServer.GameServer;
-using TemplateTCPServer.SDKServer;
-
 var builder = WebApplication.CreateBuilder(args);
 
-// ---- logging (Serilog) -------------------------------------------------
-builder.Host.UseSerilog((ctx, cfg) => cfg
+builder.Host.UseSerilog((ctx, services, cfg) => cfg
     .ReadFrom.Configuration(ctx.Configuration)
-    .WriteTo.Console()
-    .WriteTo.File("logs/log.txt", shared: true));
+    .WriteTo.Console());                              // console only; no file logging
 
-// Kestrel sync IO flag preserved from the old SDKServer
+// Catch captive-dependency mistakes (scoped resolved from root) in dev.
+builder.Host.UseDefaultServiceProvider((ctx, opt) =>
+{
+    opt.ValidateScopes  = ctx.HostingEnvironment.IsDevelopment();
+    opt.ValidateOnBuild = ctx.HostingEnvironment.IsDevelopment();
+});
+
 builder.Services.Configure<KestrelServerOptions>(o => o.AllowSynchronousIO = true);
 
-// ---- data layer (EF Core + Postgres) ----------------------------------
-builder.Services.AddDataLayer(builder.Configuration);   // AddDbContext + repositories
-
-// ---- HTTP side (login / SDK) -------------------------------------------
-builder.Services.AddSdkServer();                        // controllers + IAuthService
-
-// ---- TCP side (main game server) ---------------------------------------
-builder.Services.AddGameServer(builder.Configuration);  // hosted service + handlers + dispatcher
+builder.Services.AddDataLayer(builder.Configuration);   // ---- EF Core + Postgres
+builder.Services.AddSdkServer();                        // ---- HTTP login/config
+builder.Services.AddGameServer();                       // ---- TCP main server
 
 var app = builder.Build();
-
 app.UseSerilogRequestLogging();
 app.UseAuthorization();
 app.MapControllers();
-
-// host.Run() starts BOTH the Kestrel HTTP server AND the
-// GameServerHostedService (the TCP listener) under one lifecycle.
-app.Run();
+app.Run();   // starts BOTH the Kestrel HTTP server AND the GameServer TCP listener
 ```
 
-Key point: there is **no more `Task.Run(GameServer.Instance.Start)`** and **no second
-`Main`**. The host starts the TCP `BackgroundService` for us, and shuts it down cleanly
-on Ctrl-C / SIGTERM via the `stoppingToken`.
+There is exactly **one `Main`** (this one). `app.Run()` starts the Kestrel HTTP server and
+the `GameServerHostedService` together and shuts both down on Ctrl-C / SIGTERM.
 
 ---
 
-## 4. EF Core data layer (`TemplateTCPServer.Data`)
+## 3. EF Core data layer (`TemplateTCPServer.Data`)
 
-### 4.1 Packages (add to `TemplateTCPServer.Data.csproj`)
+### 3.1 Packages
 
 ```xml
-<PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.*" />
-<PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.*" />
-<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.*">
+<PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.11" />
+<PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="8.0.11" />
+<PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
+<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.11">
   <PrivateAssets>all</PrivateAssets>
 </PackageReference>
 ```
 
-(Move the EFCore.Design reference out of SDKServer; Data becomes the migrations assembly.)
+Data is the migrations assembly (EFCore.Design lives here, not in SDKServer).
 
-### 4.2 Entity + DbContext
+### 3.2 Entity + DbContext (`Core/`)
 
 ```csharp
-public class User
+public class Account
 {
     public long Id { get; set; }
     public string Username { get; set; } = "";
@@ -171,261 +147,279 @@ public class User
 public class AppDbContext : DbContext
 {
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
-
-    public DbSet<User> Users => Set<User>();
+    public DbSet<Account> Accounts => Set<Account>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
-        b.Entity<User>(e =>
+        b.Entity<Account>(e =>
         {
-            e.HasKey(u => u.Id);
-            e.HasIndex(u => u.Username).IsUnique();
+            e.HasKey(a => a.Id);
+            e.HasIndex(a => a.Username).IsUnique();
+            e.Property(a => a.Username).IsRequired();
         });
     }
 }
 ```
 
-### 4.3 Repository pattern
+`Account` is a placeholder; replace/extend with the real domain model.
+
+### 3.3 Repository pattern — **synchronous**
+
+A generic base (`Core/IRepository.cs` + `Core/Repository.cs`) kept in separate files, and
+per-entity repositories where the interface + impl share one file:
 
 ```csharp
-public interface IUserRepository
+// Core/IRepository.cs
+public interface IRepository<T> where T : class
 {
-    Task<User?> GetByUsernameAsync(string username, CancellationToken ct = default);
-    Task AddAsync(User user, CancellationToken ct = default);
+    T? GetById(long id);
+    void Add(T entity);
+    void Remove(T entity);
+    int SaveChanges();
 }
 
-public class UserRepository : IUserRepository
+// Core/Repository.cs
+public class Repository<T> : IRepository<T> where T : class
 {
-    private readonly AppDbContext _db;
-    public UserRepository(AppDbContext db) => _db = db;   // DbContext injected, scoped
+    protected readonly AppDbContext Db;
+    public Repository(AppDbContext db) => Db = db;          // DbContext injected, scoped
 
-    public Task<User?> GetByUsernameAsync(string username, CancellationToken ct = default)
-        => _db.Users.SingleOrDefaultAsync(u => u.Username == username, ct);
+    public virtual T? GetById(long id) => Db.Set<T>().Find(id);
+    public virtual void Add(T entity)  => Db.Set<T>().Add(entity);
+    public virtual void Remove(T entity) => Db.Set<T>().Remove(entity);
+    public virtual int SaveChanges() => Db.SaveChanges();
+}
 
-    public async Task AddAsync(User user, CancellationToken ct = default)
-    {
-        await _db.Users.AddAsync(user, ct);
-        await _db.SaveChangesAsync(ct);
-    }
+// Repositories/AccountRepository.cs  (interface + impl together)
+public interface IAccountRepository : IRepository<Account>
+{
+    Account? GetByUsername(string username);
+    int Count();
+}
+
+public sealed class AccountRepository : Repository<Account>, IAccountRepository
+{
+    public AccountRepository(AppDbContext db) : base(db) { }
+    public Account? GetByUsername(string username)
+        => Db.Accounts.SingleOrDefault(a => a.Username == username);
+    public int Count() => Db.Accounts.Count();
 }
 ```
 
-> Optional `IUnitOfWork` if you want services to control the transaction/`SaveChanges`
-> boundary instead of repositories calling `SaveChanges` themselves. For a template,
-> per-repo `SaveChanges` is fine; note it as a future refinement.
+All methods use EF Core's **synchronous** APIs (`Find`, `SingleOrDefault`, `Count`,
+`SaveChanges`).
 
-### 4.4 DI extension — `AddDataLayer`
+> Convention used in this template: the generic base `IRepository`/`Repository` stay in
+> separate files; an interface that has a single concrete implementation
+> (`IAccountRepository`/`AccountRepository`, `IExampleService`/`ExampleService`,
+> `IAuthService`/`AuthService`) is kept in one file.
+
+### 3.4 DI extension — `AddDataLayer`
 
 ```csharp
-public static class DependencyInjection
+public static class DataExtensions
 {
-    public static IServiceCollection AddDataLayer(
-        this IServiceCollection services, IConfiguration config)
+    public static IServiceCollection AddDataLayer(this IServiceCollection services, IConfiguration config)
     {
         services.AddDbContext<AppDbContext>(opt =>
             opt.UseNpgsql(
                 config.GetConnectionString("Postgres"),
                 npg => npg.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)));
 
-        services.AddScoped<IUserRepository, UserRepository>();
-        // services.AddScoped<IUnitOfWork, UnitOfWork>();
+        services.AddScoped<IAccountRepository, AccountRepository>();
         return services;
     }
 }
 ```
 
-`AddDbContext<T>` registers `AppDbContext` as **Scoped** by default — exactly what we want:
-one `DbContext` per packet scope (Section 6).
+`AddDbContext<T>` registers `AppDbContext` as **Scoped** — one `DbContext` per packet
+scope (§6).
 
-### 4.5 Connection string (`appsettings.json`)
+### 3.5 Connection string (`appsettings.json`)
 
 ```json
-{
-  "ConnectionStrings": {
-    "Postgres": "Host=localhost;Port=5432;Database=ntr;Username=postgres;Password=postgres"
-  }
-}
+{ "ConnectionStrings": { "Postgres": "Host=localhost;Port=5432;Database=templatetcp;Username=postgres;Password=postgres" } }
 ```
 
-### 4.6 Migrations
+The DbContext registration is lazy, so the host boots fine without a reachable database;
+queries fail only when actually executed.
+
+### 3.6 Migrations
 
 ```
 dotnet ef migrations add InitialCreate -p TemplateTCPServer.Data -s TemplateTCPServer
-dotnet ef database update            -p TemplateTCPServer.Data -s TemplateTCPServer
+dotnet ef database update              -p TemplateTCPServer.Data -s TemplateTCPServer
 ```
 
-`-p` = migrations project (Data), `-s` = startup project (the Exe that has the host +
-connection string). Optionally apply migrations on boot in dev with `db.Database.Migrate()`.
+`-p` = migrations project (Data), `-s` = startup project (the Exe with the host + conn string).
 
 ---
 
-## 5. Packet handler system — adapting your factory to DI
+## 4. Packet handler system
 
-Your current `PacketHandlerFactory` does two jobs: (a) **discover** handlers via reflection
-and build a `MsgId → MethodInfo` map, and (b) **instantiate + invoke** them via
-`Activator.CreateInstance`. We keep (a), and replace (b) with DI resolution. Split into
-two types:
+The routing logic is split in two: discovery (reflection, once at startup) and dispatch
+(per packet, via DI). No `Activator.CreateInstance`.
 
-### 5.1 `PacketHandlerRegistry` — build the routing map once at startup (singleton)
+### 4.1 `PacketHandlerRegistry` — build the routing map once (singleton)
 
-Reflection is used **only** to discover the `MsgId → handler type/method` mapping. No
+Reflection is used **only** to discover the `MsgId → (handler type, method)` mapping; no
 instances are created here.
 
 ```csharp
 public sealed class PacketHandlerRegistry
 {
-    // MsgId -> (handler CLR type, the [PacketHandler] method on it)
     private readonly Dictionary<MsgId, HandlerEntry> _map = new();
 
-    public PacketHandlerRegistry(IEnumerable<Assembly> handlerAssemblies)
+    public PacketHandlerRegistry(IEnumerable<Assembly> handlerAssemblies, ILogger<PacketHandlerRegistry>? logger = null)
     {
-        foreach (var type in handlerAssemblies
-                     .SelectMany(a => a.GetTypes())
-                     .Where(t => typeof(IPacketHandler).IsAssignableFrom(t)
-                                 && t is { IsInterface: false, IsAbstract: false }))
-        {
+        var handlerTypes = handlerAssemblies
+            .SelectMany(a => a.GetTypes())
+            .Where(t => typeof(IPacketHandler).IsAssignableFrom(t)
+                        && t is { IsInterface: false, IsAbstract: false });
+
+        foreach (var type in handlerTypes)
             foreach (var method in type.GetMethods())
             {
                 var attr = method.GetCustomAttribute<PacketHandlerAttribute>(false);
                 if (attr is null) continue;
-                if (!_map.TryAdd(attr.MsgId, new HandlerEntry(type, method)))
-                    Log.Warning("Duplicate handler for {MsgId}", attr.MsgId);
-                else
-                    Log.Information("Mapped {MsgId} -> {Type}.{Method}",
-                        attr.MsgId, type.Name, method.Name);
+                _map.TryAdd(attr.MsgId, new HandlerEntry(type, method));
             }
-        }
     }
 
-    public bool TryGet(MsgId id, out HandlerEntry entry) => _map.TryGetValue(id, out entry!);
-
+    public bool TryGet(MsgId id, out HandlerEntry entry) => _map.TryGetValue(id, out entry);
     public IEnumerable<Type> HandlerTypes => _map.Values.Select(e => e.Type).Distinct();
 }
 
 public readonly record struct HandlerEntry(Type Type, MethodInfo Method);
 ```
 
-### 5.2 `IPacketHandler` — give it a real contract
+### 4.2 Handlers — attribute on methods, **synchronous, return `void`**
 
-Two viable styles; pick one for the template:
-
-**Style A — attribute on methods (keeps your current model, multiple MsgIds per class).**
-The dispatcher uses the registry's `MethodInfo` and resolves the declaring type from DI:
+A handler implements the `IPacketHandler` marker, takes its dependencies via the
+constructor, and tags a `(Connection, BasePacket)` method returning `void`:
 
 ```csharp
-public interface IPacketHandler { }   // marker, as today
+public interface IPacketHandler { }   // marker
 
-public class AuthHandler : IPacketHandler
+public sealed class PingHandler : IPacketHandler
 {
-    private readonly IAuthService _auth;          // ← constructor injection now works
-    public AuthHandler(IAuthService auth) => _auth = auth;
+    private readonly IExampleService _example;            // ← constructor injection works
+    private readonly ILogger<PingHandler> _logger;
 
-    [PacketHandler(MsgId.Login)]
-    public async Task Login(Connection conn, BasePacket packet)
+    public PingHandler(IExampleService example, ILogger<PingHandler> logger)
+    { _example = example; _logger = logger; }
+
+    [PacketHandler(MsgId.Ping)]
+    public void HandlePing(Connection connection, BasePacket packet)
     {
-        var req = packet.As<LoginRequest>();
-        var result = await _auth.LoginAsync(req.Username, req.Password);
-        conn.Send(result.ToPacket());
+        try
+        {
+            int accounts = _example.CountAccounts();      // Service → Repository → DbContext
+            _logger.LogInformation("Ping from {Id} (accounts in db: {Count})", connection.Id, accounts);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Ping from {Id} (db unavailable, replying anyway)", connection.Id);
+        }
+        connection.Send(new RawPacket(MsgId.Pong, ReadOnlyMemory<byte>.Empty));
     }
 }
 ```
 
-**Style B — one handler class per MsgId, strongly typed (more idiomatic DI).**
+`PingHandler` is the bundled **example** demonstrating the full chain; the DB call is
+guarded so it still replies when no database is configured.
 
-```csharp
-public interface IPacketHandler<TPacket> where TPacket : BasePacket
-{
-    Task HandleAsync(Connection conn, TPacket packet, CancellationToken ct);
-}
+### 4.3 `PacketDispatcher` — resolve per scope and invoke (singleton)
 
-[PacketHandler(MsgId.Login)]
-public class LoginHandler : IPacketHandler<LoginRequest>
-{
-    private readonly IAuthService _auth;
-    public LoginHandler(IAuthService auth) => _auth = auth;
-    public Task HandleAsync(Connection conn, LoginRequest p, CancellationToken ct) => ...;
-}
-```
-
-> Recommendation: **Style A** keeps your existing attribute-on-method ergonomics (the
-> thing you said to preserve), and the only change vs today is that the instance comes
-> from `scope.ServiceProvider` instead of `Activator.CreateInstance`. The plan's snippets
-> below use Style A.
-
-### 5.3 `PacketDispatcher` — resolve per scope and invoke (singleton)
-
-This replaces `PacketHandlerFactory.InvokePacketHandler`. It is a **singleton** (cheap,
-stateless), but it **creates a scope per packet** and resolves the handler from that scope,
-so the handler and everything it injects (`IAuthService`, `IUserRepository`, `AppDbContext`)
-are scoped to the single packet.
+A singleton (stateless), but for **each packet** it opens a fresh DI scope and resolves the
+handler from it, so the handler and everything it injects (`IExampleService`,
+`IAccountRepository`, `AppDbContext`) are scoped to a single packet. This is the TCP-side
+equivalent of MVC's per-request controller activation — there is no framework doing it for
+a socket message, so the dispatcher does.
 
 ```csharp
 public sealed class PacketDispatcher
 {
-    private readonly IServiceProvider _root;        // the application's root provider
+    private readonly IServiceProvider _rootProvider;
     private readonly PacketHandlerRegistry _registry;
+    private readonly ILogger<PacketDispatcher> _logger;
 
-    public PacketDispatcher(IServiceProvider root, PacketHandlerRegistry registry)
-    {
-        _root = root;
-        _registry = registry;
-    }
+    public PacketDispatcher(IServiceProvider rootProvider, PacketHandlerRegistry registry, ILogger<PacketDispatcher> logger)
+    { _rootProvider = rootProvider; _registry = registry; _logger = logger; }
 
-    public async Task DispatchAsync(Connection conn, BasePacket packet, CancellationToken ct)
+    public void Dispatch(Connection connection, BasePacket packet)
     {
         if (!_registry.TryGet(packet.MsgId, out var entry))
         {
-            Log.Warning("No handler for {MsgId}; dropped", packet.MsgId);
+            _logger.LogWarning("No handler for {MsgId}; packet dropped", packet.MsgId);
             return;
         }
 
-        // ── one DI scope per packet == the "request scope" ──────────────
-        await using var scope = _root.CreateAsyncScope();
-        var handler = scope.ServiceProvider.GetRequiredService(entry.Type); // DI-built handler
-
+        using var scope = _rootProvider.CreateScope();           // one DI scope per packet
+        var handler = scope.ServiceProvider.GetRequiredService(entry.Type);
         try
         {
-            var result = entry.Method.Invoke(handler, new object[] { conn, packet });
-            if (result is Task task) await task;     // support async handlers
+            entry.Method.Invoke(handler, new object[] { connection, packet });
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "Handler {Type} failed for {MsgId}", entry.Type.Name, packet.MsgId);
+            var actual = (ex as TargetInvocationException)?.InnerException ?? ex;
+            _logger.LogError(actual, "Handler {Type}.{Method} failed for {MsgId}",
+                entry.Type.Name, entry.Method.Name, packet.MsgId);
         }
-        // scope disposed here -> DbContext disposed -> connection returned to pool
+        // scope disposed here -> DbContext disposed
     }
 }
 ```
 
-### 5.4 DI extension — `AddGameServer`
+### 4.4 DI extension — `AddGameServer`
 
 ```csharp
-public static class DependencyInjection
+public static class GameServerExtensions
 {
-    public static IServiceCollection AddGameServer(
-        this IServiceCollection services, IConfiguration config)
+    public static IServiceCollection AddGameServer(this IServiceCollection services)
     {
-        // routing map built once from the GameServer assembly (and any others)
-        var registry = new PacketHandlerRegistry(new[] { typeof(DependencyInjection).Assembly });
-        services.AddSingleton(registry);
+        // Local copy only to enumerate handler types; the resolvable singleton is
+        // registered via factory so it gets the host logger.
+        var registry = new PacketHandlerRegistry(new[] { typeof(GameServerExtensions).Assembly });
 
-        // register every discovered handler type as SCOPED so it can take scoped deps
-        foreach (var t in registry.HandlerTypes)
-            services.AddScoped(t);
+        services.AddSingleton(sp => new PacketHandlerRegistry(
+            new[] { typeof(GameServerExtensions).Assembly },
+            sp.GetService<ILogger<PacketHandlerRegistry>>()));
 
+        foreach (var handlerType in registry.HandlerTypes)   // each handler Scoped
+            services.AddScoped(handlerType);
+
+        services.AddScoped<IExampleService, ExampleService>();
+
+        services.AddSingleton<IPacketSerializer, PassthroughPacketSerializer>();
         services.AddSingleton<PacketDispatcher>();
         services.AddSingleton<ConnectionManager>();
-
-        // game business-logic services (scoped — they use repositories/DbContext)
-        services.AddScoped<IInventoryService, InventoryService>();
-        // ... more game services
-
-        // the TCP listener itself
         services.AddHostedService<GameServerHostedService>();
         return services;
     }
 }
 ```
+
+**To add a handler:** create a class implementing `IPacketHandler`, take dependencies in the
+constructor, and tag a `(Connection, BasePacket)` method with `[PacketHandler(MsgId.X)]`.
+It is auto-discovered and auto-registered — no change to `AddGameServer` needed (only
+register any *new service* it depends on).
+
+---
+
+## 5. Protocol / framing (`TemplateTCPServer.Common`)
+
+- `enum MsgId : ushort` — message identifiers (`None`, `Ping`, `Pong` in the template).
+- `abstract class BasePacket` — carries `MsgId` + a `ReadOnlyMemory<byte> Payload`.
+- `RawPacket : BasePacket` — minimal concrete packet the framing layer produces.
+- `IPacketSerializer` — `Deserialize(MsgId, payload)` / `Serialize(packet)`; default
+  `PassthroughPacketSerializer` does no body encoding (swap for JSON/binary later).
+- **Framing** (`PacketFramer`, synchronous): wire format
+  `[4-byte big-endian length][2-byte big-endian MsgId][payload]`.
+  `Read` blocks on `stream.Read` until a whole frame is assembled, returns `null` on a clean
+  EOF at a frame boundary, and throws if the stream ends mid-frame. `Write` emits the
+  header + payload and flushes.
 
 ---
 
@@ -436,238 +430,194 @@ public static class DependencyInjection
 | `GameServerHostedService` (TCP listener) | Singleton (hosted) | One listener for the process. |
 | `ConnectionManager` | Singleton | Global registry of live connections. |
 | `Connection` | **Not in DI** — `new`'d per socket | Owns the socket + read loop; lives as long as the client. |
-| `PacketDispatcher`, `PacketHandlerRegistry` | Singleton | Stateless routing; cheap. |
-| **Per-packet scope** | `CreateAsyncScope()` per message | The "request" boundary. |
-| Packet handlers (`AuthHandler`, …) | **Scoped** | Resolved inside the per-packet scope; can inject scoped deps. |
-| Services (`IAuthService`, game services) | **Scoped** | Business logic, use repositories. |
-| Repositories (`IUserRepository`) | **Scoped** | Wrap `DbContext`. |
+| `PacketDispatcher`, `PacketHandlerRegistry`, `IPacketSerializer` | Singleton | Stateless; cheap. |
+| **Per-packet scope** | `CreateScope()` per message | The "request" boundary. |
+| Packet handlers (`PingHandler`, …) | **Scoped** | Resolved inside the per-packet scope; can inject scoped deps. |
+| Services (`IExampleService`, `IAuthService`) | **Scoped** | Business logic, use repositories. |
+| Repositories (`IAccountRepository`) | **Scoped** | Wrap `DbContext`. |
 | `AppDbContext` | **Scoped** | Short-lived, not thread-safe → must not outlive one packet. |
 
-**Critical anti-pattern to avoid:** do **not** inject `AppDbContext`, a repository, or any
+**Critical anti-pattern to avoid:** never inject `AppDbContext`, a repository, or any
 scoped service directly into the singleton `Connection`/listener/dispatcher constructors.
-Captive-dependency: a scoped `DbContext` captured by a singleton would be shared across all
-connections and never disposed. Always go through `CreateAsyncScope()` per packet (which
-the dispatcher does). The DI container will actually throw on this if validation is on —
-keep `builder.Host.UseDefaultServiceProvider(o => o.ValidateScopes = true)` in dev.
+A scoped `DbContext` captured by a singleton would be shared across all connections and
+never disposed (a *captive dependency*). Always go through `CreateScope()` per packet (the
+dispatcher does this). `ValidateScopes`/`ValidateOnBuild` are on in Development to make this
+throw at startup rather than corrupt state at runtime.
+
+**Connection-scoped state** (authenticated account, session) belongs on the `Connection`
+object — it lives per socket. The DI scope is per *packet* and must not hold session state.
 
 ---
 
-## 7. The connection read loop (`Connection` + hosted service)
+## 7. The connection loop — synchronous, thread-per-connection
 
 ### 7.1 `GameServerHostedService`
 
-Replaces the singleton `GameServer` + `Task.Run`. Owns the `TcpListener`, accepts clients,
-and hands each to a `Connection`. It receives the **dispatcher** and **manager** by
-constructor injection (both singletons → safe).
+An `IHostedService` (not `BackgroundService`, since the loop is blocking, not async-await).
+`StartAsync` starts the listener and spins up a dedicated **accept thread**; each accepted
+client runs its blocking loop on its **own thread**. Only singletons are injected here.
 
 ```csharp
-public sealed class GameServerHostedService : BackgroundService
+public sealed class GameServerHostedService : IHostedService
 {
-    private readonly PacketDispatcher _dispatcher;
-    private readonly ConnectionManager _connections;
-    private readonly TcpListener _listener;
-    private readonly ILogger<GameServerHostedService> _log;
+    // ... ctor takes PacketDispatcher, IPacketSerializer, ConnectionManager,
+    //     IConfiguration, ILoggerFactory (all singletons)
 
-    public GameServerHostedService(
-        PacketDispatcher dispatcher, ConnectionManager connections,
-        IConfiguration config, ILogger<GameServerHostedService> log)
+    public Task StartAsync(CancellationToken cancellationToken)
     {
-        _dispatcher = dispatcher;
-        _connections = connections;
-        _log = log;
-        var port = config.GetValue("GameServer:Port", 6969);
-        _listener = new TcpListener(IPAddress.Any, port);
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
+        _listener = new TcpListener(IPAddress.Any, _port);
         _listener.Start();
-        _log.LogInformation("GameServer listening on {Port}",
-            ((IPEndPoint)_listener.LocalEndpoint).Port);
-
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            var client = await _listener.AcceptTcpClientAsync(stoppingToken);
-            var conn = new Connection(client, _dispatcher, _connections);
-            _ = conn.RunAsync(stoppingToken);     // fire-and-forget per connection
-        }
+        _acceptThread = new Thread(AcceptLoop) { IsBackground = true, Name = "GameServer-Accept" };
+        _acceptThread.Start();
+        return Task.CompletedTask;
     }
 
-    public override Task StopAsync(CancellationToken ct)
+    private void AcceptLoop()
     {
-        _listener.Stop();
-        return base.StopAsync(ct);
+        var connectionLogger = _loggerFactory.CreateLogger<Connection>();
+        try
+        {
+            while (!_stopping)
+            {
+                TcpClient client = _listener!.AcceptTcpClient();           // blocking
+                var connection = new Connection(client, _dispatcher, _serializer, _connections, connectionLogger);
+                new Thread(connection.Run) { IsBackground = true }.Start(); // one thread per connection
+            }
+        }
+        catch (SocketException) when (_stopping) { /* listener stopped during shutdown */ }
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        _stopping = true;
+        foreach (var connection in _connections.Connections) connection.Close();
+        _listener?.Stop();
+        return Task.CompletedTask;
     }
 }
 ```
 
-### 7.2 `Connection` — read, frame, dispatch (no singletons, no DI of scoped deps)
+### 7.2 `Connection`
+
+`new`'d per socket (not a DI service); only references singletons. Its `Run()` blocks the
+connection's thread reading frames and dispatching them sequentially.
 
 ```csharp
 public sealed class Connection
 {
-    private readonly TcpClient _client;
-    private readonly PacketDispatcher _dispatcher;
-    private readonly NetworkStream _stream;
+    // ctor: TcpClient, PacketDispatcher, IPacketSerializer, ConnectionManager, ILogger
     public string Id { get; }
 
-    public Connection(TcpClient client, PacketDispatcher dispatcher, ConnectionManager mgr)
+    public void Run()
     {
-        _client = client;
-        _dispatcher = dispatcher;
-        _stream = client.GetStream();
-        Id = client.Client.RemoteEndPoint!.ToString()!;
-        mgr.Add(this);
-    }
-
-    public async Task RunAsync(CancellationToken ct)
-    {
+        _manager.Add(this);
+        _logger.LogInformation("{Id} connected", Id);
         try
         {
-            while (_client.Connected && !ct.IsCancellationRequested)
+            while (true)
             {
-                // 1. read framed bytes off the wire (length-prefixed, see §8)
-                BasePacket? packet = await ReadPacketAsync(ct);
-                if (packet is null) break;
-
-                // 2. hand to dispatcher -> creates per-packet scope -> handler
-                await _dispatcher.DispatchAsync(this, packet, ct);
+                BasePacket? packet = PacketFramer.Read(_stream, _serializer);   // blocking
+                if (packet is null) break;                                      // peer closed
+                _dispatcher.Dispatch(this, packet);                             // per-packet scope
             }
         }
-        catch (Exception ex) { Log.Warning(ex, "{Id} read loop ended", Id); }
-        finally { _client.Close(); }
+        catch (Exception ex) { _logger.LogWarning(ex, "{Id} read loop ended", Id); }
+        finally
+        {
+            _manager.Remove(this);
+            _client.Close();
+            _logger.LogInformation("{Id} disconnected", Id);
+        }
     }
 
-    public ValueTask Send(BasePacket packet) => /* serialize + write to _stream */;
-    private Task<BasePacket?> ReadPacketAsync(CancellationToken ct) => /* framing + deserialize */;
+    public void Send(BasePacket packet) => PacketFramer.Write(_stream, _serializer, packet);
+    public void Close() => _client.Close();
 }
 ```
 
-> The current code reads with `BinaryReader.ReadString()` and busy-polls `DataAvailable`.
-> Replace both: use async stream reads (`ReadExactlyAsync`) and **length-prefixed framing**
-> so a `BasePacket` is fully assembled before dispatch. See §8.
+### 7.3 The trade-off
+
+Thread-per-connection means **each connected client permanently occupies one OS thread**
+parked in a blocking socket read, even when idle. For a low-population private server that
+is fine and buys real simplicity (no `async`/`await`/`Task`/`CancellationToken` anywhere in
+the app's own code). It is the first thing to revisit if the server ever needs to handle
+hundreds of simultaneous connections — at which point an async read loop (`BackgroundService`
++ `await ReadAsync`) would scale better. Packets on a single connection are processed
+sequentially in arrival order (good for per-connection ordering); a slow handler blocks only
+that one connection's thread.
 
 ---
 
-## 8. Protocol / framing (in `TemplateTCPServer.Common`)
+## 8. SDKServer (login) under the shared host
 
-You referenced `MsgId`, `BasePacket`, and `IPacketHandler` from `NTRSimulator.Common.Protocol`.
-Define the protocol surface in the new `Common` project so all projects share it:
-
-- `enum MsgId { ... }` — message identifiers.
-- `abstract class BasePacket { MsgId MsgId { get; } ... T As<T>() }` — base envelope + helper to read the typed body.
-- `IPacketSerializer` — turns bytes ⇄ `BasePacket`. Pick JSON (you already ship Newtonsoft) or a binary scheme.
-- **Framing:** `[4-byte length][2-byte MsgId][payload]`. `Connection.ReadPacketAsync` reads the length, then `ReadExactlyAsync(length)`, then deserializes. This removes the `DataAvailable` busy-loop and the `ReadString` ambiguity.
-
----
-
-## 9. SDKServer (login) under the shared host
-
-**`SDKServer.Main` is deleted entirely.** There is exactly one `Main` — in the
-`TemplateTCPServer` startup project (§3.1). The SDKServer project becomes a plain class
-library of controllers + login services with **no entry point of its own**. The startup
-project's host pulls those controllers in as an *application part*.
-
-### 9.1 Minimal form (what you proposed) — register the controllers directly
-
-In the startup project's `Main`, register the SDKServer assembly's controllers straight
-onto the shared host:
+`SDKServer` has **no `Main`** — it is a class library of controllers + login services. The
+startup host pulls its controllers in as an *application part*:
 
 ```csharp
-// in TemplateTCPServer/Program.cs (the ONLY Main)
-builder.Services
-    .AddControllers()
-    .AddApplicationPart(typeof(TemplateTCPServer.SDKServer.SDKServer).Assembly);
-```
-
-`AddApplicationPart` tells MVC to scan that assembly for `[ApiController]` types, so
-`SDKController` is discovered and mapped by `app.MapControllers()` even though it lives in
-a referenced library. This is the whole reason it worked before — the old `SDKServer.Main`
-called the same thing on its own builder; now it runs on the shared builder instead.
-
-> Note: pick any type that lives in the SDKServer assembly as the `typeof(...)` anchor.
-> Today that's the `SDKServer` class itself; once you remove its `Main` you can keep the
-> class as an empty marker, or just anchor on `typeof(SDKController)` and delete the
-> `SDKServer` class outright.
-
-### 9.2 Cleaner form (optional) — wrap it in an `AddSdkServer` extension
-
-Functionally identical, but keeps the startup `Main` tidy and co-locates SDK service
-registrations (`IAuthService`) with the controllers they back:
-
-```csharp
-// in TemplateTCPServer.SDKServer/DependencyInjection.cs
-public static class DependencyInjection
+public static class SdkServerExtensions
 {
-    public static IMvcBuilder AddSdkServer(this IServiceCollection s)
+    public static IServiceCollection AddSdkServer(this IServiceCollection services)
     {
-        s.AddScoped<IAuthService, AuthService>();       // shared login logic
-        return s.AddControllers()
-                .AddApplicationPart(typeof(SDKController).Assembly);
+        services.AddScoped<IAuthService, AuthService>();
+        services.AddControllers().AddApplicationPart(typeof(SDKController).Assembly);
+        return services;
     }
 }
-
-// in Program.cs
-builder.Services.AddSdkServer();
 ```
 
-Either way: because `SDKController` now lives in the **same container**, it can inject the
-same `IAuthService` / `IUserRepository` the GameServer uses. `AuthService` (scoped) depends
-on `IUserRepository` (scoped) → `AppDbContext` (scoped). HTTP requests already create a
-scope per request automatically, so the `Handler→Service→Repo→DbContext` chain works
-unchanged on the HTTP side; the TCP side reproduces that scope manually via the dispatcher.
+`AddApplicationPart` makes MVC discover `[ApiController]` types in the referenced library so
+`app.MapControllers()` maps them. Because `SDKController` lives in the same container, it can
+inject the same `IAuthService` / `IAccountRepository` the GameServer uses. `AuthService`
+(scoped) → `IAccountRepository` (scoped) → `AppDbContext` (scoped). HTTP requests already get
+a scope per request automatically; the TCP side reproduces that scope per packet via the
+dispatcher.
 
-> ⚠️ Watch the namespace/type collision: the project has a class `SDKServer` inside
-> namespace `TemplateTCPServer.SDKServer`. Referencing `typeof(SDKServer)` from
-> `Program.cs` needs the full path `TemplateTCPServer.SDKServer.SDKServer` (or anchor on
-> `SDKController` to avoid the awkwardness). Removing the now-empty `SDKServer` class after
-> deleting its `Main` sidesteps this.
+`IAuthService`/`AuthService` are synchronous (`bool ValidateCredentials(username, password)`).
+The bundled `SDKController` actions are already synchronous (`IResult`, no `async`).
 
 ---
 
-## 10. End-to-end flow (the payoff)
+## 9. End-to-end flow (the payoff)
 
 **HTTP login (SDKServer):**
 ```
-POST /login → SDKController (scope auto-created by ASP.NET)
-   → IAuthService.LoginAsync
-      → IUserRepository.GetByUsernameAsync
+GET /... → SDKController (scope auto-created by ASP.NET)
+   → IAuthService.ValidateCredentials
+      → IAccountRepository.GetByUsername
          → AppDbContext (scoped, disposed at end of request)
 ```
 
-**TCP login packet (GameServer):**
+**TCP packet (GameServer), e.g. the Ping example:**
 ```
-bytes on socket → Connection.ReadPacketAsync → BasePacket{MsgId.Login}
-   → PacketDispatcher.DispatchAsync  ── creates IServiceScope (the request boundary) ──
-      → AuthHandler (resolved from scope)
-         → IAuthService.LoginAsync
-            → IUserRepository.GetByUsernameAsync
+bytes on socket → Connection.Run → PacketFramer.Read → BasePacket{MsgId.Ping}
+   → PacketDispatcher.Dispatch  ── creates IServiceScope (the per-packet boundary) ──
+      → PingHandler (resolved from scope)
+         → IExampleService.CountAccounts
+            → IAccountRepository.Count
                → AppDbContext (scoped, disposed when scope disposes)
-   → Connection.Send(LoginResult)
+   → Connection.Send(RawPacket{MsgId.Pong})
 ```
 
-Same layered chain, same DI semantics, two transports.
+Same layered chain, same DI semantics, two transports — both fully synchronous.
 
 ---
 
-## 11. Migration steps (suggested order)
+## 10. Things to watch / future refinements
 
-1. **Create `TemplateTCPServer.Common`**; move/define `MsgId`, `BasePacket`, `IPacketHandler`, serializer + framing. Have GameServer/SDKServer/Data reference it.
-2. **Create `TemplateTCPServer.Data`**; add Npgsql + EFCore packages, `AppDbContext`, `User`, `IUserRepository`/`UserRepository`, `AddDataLayer`. Add connection string to `appsettings.json`. Generate `InitialCreate` migration.
-3. **Rework GameServer**: add `GameServerHostedService` (delete singleton `GameServer`), rewrite `Connection` (async framing, no `Activator`), add `PacketHandlerRegistry` + `PacketDispatcher` (replace `PacketHandlerFactory`), add `AddGameServer`. Keep `PacketHandlerAttribute` as-is.
-4. **Rework SDKServer**: **delete `SDKServer.Main`** (the startup project's `Main` is now the only entry point); register its controllers on the shared host via `AddControllers().AddApplicationPart(typeof(SDKController).Assembly)` — directly in `Program.cs` (§9.1) or wrapped in `AddSdkServer` (§9.2); move login logic into `IAuthService`. Optionally delete the now-empty `SDKServer` class.
-5. **Rewrite `Program.cs`** as the single composition root (Section 3.1). Delete the second `Main` invocation and the `Task.Run`.
-6. **Wire a sample handler** (`AuthHandler` for `MsgId.Login`) that goes all the way to the DB, to prove the chain.
-7. **Turn on scope validation** in dev (`ValidateScopes = true`) to catch captive dependencies.
-
----
-
-## 12. Things to watch / future refinements
-
-- **Captive dependencies**: never inject scoped services into the singleton listener/dispatcher/connection. Only the per-packet scope touches `DbContext`. (Section 6.)
-- **`AllowSynchronousIO`**: was needed for the old `BinaryReader`/`Results.Text` sync paths. Once `Connection` is fully async you may be able to drop it.
-- **`MethodInfo.Invoke` reflection cost**: fine to start; if it shows up in profiling, compile delegates (`Delegate.CreateDelegate` / expression trees) once in the registry and cache them.
-- **UnitOfWork / transactions**: per-repo `SaveChanges` is fine for a template; introduce `IUnitOfWork` when a handler needs multiple repos in one transaction.
-- **Connection-scoped state** (authenticated user, session): store on the `Connection` object (singleton-per-socket), not in the DI scope. The DI scope is per-packet and must not hold session state.
-- **Graceful shutdown**: the hosted service's `stoppingToken` already stops accepting; also iterate `ConnectionManager` to close live sockets in `StopAsync`.
-- **Backpressure / ordering**: dispatching each packet on the connection's read loop processes them sequentially per connection (good for ordering). If a handler is slow, consider a per-connection channel/queue rather than blocking the read loop.
+- **Captive dependencies** — never inject scoped services into the singleton
+  listener/dispatcher/connection. Only the per-packet scope touches `DbContext`. (§6)
+- **Thread-per-connection scaling** — fine for a private server; revisit with an async read
+  loop if simultaneous-connection counts grow large. (§7.3)
+- **`AllowSynchronousIO`** — currently enabled; matches the synchronous controller/IO paths.
+- **Password hashing** — `AuthService.ValidateCredentials` has a `// TODO` plaintext
+  comparison; replace with a real hash before any real use.
+- **`MethodInfo.Invoke` reflection cost** — fine to start; if it ever matters, cache compiled
+  delegates (`Delegate.CreateDelegate` / expression trees) in the registry.
+- **UnitOfWork / transactions** — repositories expose `SaveChanges` directly; introduce an
+  `IUnitOfWork` if a handler ever needs multiple repositories in one transaction.
+- **Serializer** — `PassthroughPacketSerializer` is a placeholder; swap for JSON or a binary
+  scheme (with typed packet classes) when the protocol is fleshed out.
+- **Graceful shutdown** — `StopAsync` sets a stop flag, stops the listener (unblocking the
+  accept thread), and closes all live sockets (unblocking each connection thread); all
+  server threads are background threads.
+```

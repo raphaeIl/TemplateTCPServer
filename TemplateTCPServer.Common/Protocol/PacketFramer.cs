@@ -7,13 +7,10 @@ namespace TemplateTCPServer.Common.Protocol
     {
         public const int HeaderLength = sizeof(int) + sizeof(ushort);
 
-        public static async Task<BasePacket?> ReadAsync(
-            Stream stream,
-            IPacketSerializer serializer,
-            CancellationToken ct = default)
+        public static BasePacket? Read(Stream stream, IPacketSerializer serializer)
         {
             var header = new byte[HeaderLength];
-            if (!await ReadExactlyOrEofAsync(stream, header, ct))
+            if (!ReadExactlyOrEof(stream, header))
                 return null;
 
             int payloadLength = BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(0, sizeof(int)));
@@ -23,17 +20,13 @@ namespace TemplateTCPServer.Common.Protocol
                 throw new InvalidDataException($"Negative payload length ({payloadLength}) in frame.");
 
             var payload = new byte[payloadLength];
-            if (payloadLength > 0 && !await ReadExactlyOrEofAsync(stream, payload, ct))
+            if (payloadLength > 0 && !ReadExactlyOrEof(stream, payload))
                 throw new EndOfStreamException("Stream ended mid-payload.");
 
             return serializer.Deserialize(msgId, payload);
         }
 
-        public static async Task WriteAsync(
-            Stream stream,
-            IPacketSerializer serializer,
-            BasePacket packet,
-            CancellationToken ct = default)
+        public static void Write(Stream stream, IPacketSerializer serializer, BasePacket packet)
         {
             ReadOnlyMemory<byte> payload = serializer.Serialize(packet);
 
@@ -41,20 +34,19 @@ namespace TemplateTCPServer.Common.Protocol
             BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(0, sizeof(int)), payload.Length);
             BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(sizeof(int), sizeof(ushort)), (ushort)packet.MsgId);
 
-            await stream.WriteAsync(header, ct);
+            stream.Write(header);
             if (!payload.IsEmpty)
-                await stream.WriteAsync(payload, ct);
-            await stream.FlushAsync(ct);
+                stream.Write(payload.Span);
+            stream.Flush();
         }
 
         // Returns false on a clean EOF at a frame boundary; throws if the stream ends mid-frame.
-        private static async Task<bool> ReadExactlyOrEofAsync(
-            Stream stream, Memory<byte> buffer, CancellationToken ct)
+        private static bool ReadExactlyOrEof(Stream stream, Span<byte> buffer)
         {
             int read = 0;
             while (read < buffer.Length)
             {
-                int n = await stream.ReadAsync(buffer[read..], ct);
+                int n = stream.Read(buffer[read..]);
                 if (n == 0)
                 {
                     if (read == 0) return false;

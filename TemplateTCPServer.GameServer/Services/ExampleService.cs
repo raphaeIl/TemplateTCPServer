@@ -4,7 +4,7 @@ namespace TemplateTCPServer.GameServer.Services
 {
     public interface IExampleService
     {
-        Task<int> CountAccountsAsync(CancellationToken ct = default);
+        int CountAccounts();
     }
 
     public sealed class ExampleService : IExampleService
@@ -13,7 +13,7 @@ namespace TemplateTCPServer.GameServer.Services
 
         public ExampleService(IAccountRepository accounts) => _accounts = accounts;
 
-        public Task<int> CountAccountsAsync(CancellationToken ct = default)
-            => _accounts.CountAsync(ct);
+        public int CountAccounts()
+            => _accounts.Count();
     }
 }

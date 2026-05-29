@@ -4,7 +4,7 @@ namespace TemplateTCPServer.SDKServer.Services
 {
     public interface IAuthService
     {
-        Task<bool> ValidateCredentialsAsync(string username, string password, CancellationToken ct = default);
+        bool ValidateCredentials(string username, string password);
     }
 
     public sealed class AuthService : IAuthService
@@ -13,9 +13,9 @@ namespace TemplateTCPServer.SDKServer.Services
 
         public AuthService(IAccountRepository accounts) => _accounts = accounts;
 
-        public async Task<bool> ValidateCredentialsAsync(string username, string password, CancellationToken ct = default)
+        public bool ValidateCredentials(string username, string password)
         {
-            var account = await _accounts.GetByUsernameAsync(username, ct);
+            var account = _accounts.GetByUsername(username);
             if (account is null)
                 return false;
 
