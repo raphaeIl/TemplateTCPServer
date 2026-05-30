@@ -1,0 +1,6 @@
+# Everything here is generated at build time by the Raphael.Tcp.Tools package:
+#   *Tcp.cs        — TCP service bases (forked grpc_csharp_plugin)
+#   protos/*.cs    — protobuf message types (Grpc.Tools --csharp_out)
+# Regenerated from ../protos on every build. Do not commit.
+*
+!.gitignore

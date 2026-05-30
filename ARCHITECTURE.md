@@ -10,7 +10,7 @@
 > - **Execution model:** **fully synchronous, thread-per-connection.** No `async`/`await`, no `Task<T>`, no `CancellationToken` on the app's own methods. Chosen because this is a low-population private server where the simplicity is worth the one parked thread per connected client. (See §7 for the trade-off.)
 > - **DI scoping:** one `IServiceScope` **per packet** (the analog of an HTTP request scope).
 > - **Handler resolution:** `[PacketHandler(MsgId)]` attribute scanning builds a routing map at startup, but handlers are **registered in DI** and resolved per-scope (no `Activator.CreateInstance`).
-> - **Handler shape:** handlers are **proto-defined** — a `.proto` `service` is code-generated (by a forked `grpc_csharp_plugin`, §4.5) into an abstract `<Service>Base : IPacketHandler` you `override`. RPC methods take a **typed protobuf request** + `Connection` and **return** a typed response; the dispatcher (de)serializes and frames the reply. (gRPC ergonomics, raw-TCP transport — no HTTP/2, no `ServerCallContext`.)
+> - **Handler shape:** handlers are **proto-defined** — a `.proto` `service` is code-generated (by the `Raphael.Tcp.Tools` package, a forked `grpc_csharp_plugin`, §4.5) into an abstract `<Service>Base : IPacketHandler` you `override`. RPC methods take a **typed protobuf request** + `Connection` and **return** a typed response; the dispatcher (de)serializes and frames the reply. (gRPC ergonomics, raw-TCP transport — no HTTP/2, no `ServerCallContext`.)
 > - **Layering:** `Handler → Service → Repository → DbContext`.
 > - **SDKServer** = login/HTTP only. **GameServer** = the main server (the TCP side).
 
@@ -32,8 +32,8 @@ TemplateTCPServer.sln
 │     Protocol/IPacketSerializer.cs        → bytes ⇄ BasePacket body
 │     Protocol/PassthroughPacketSerializer.cs → default no-op serializer
 │     Protocol/PacketFramer.cs             → length-prefixed frame read/write (sync)
-│     Protocol/ping.proto                  → IDL: PingService rpcs + messages
-│     Generated/Ping.cs                    → protoc-generated message types
+│     (no proto codegen here — the Raphael.Tcp.Tools package generates messages
+│      AND the TCP base together in GameServer; see §4.5)
 │
 ├── TemplateTCPServer.Data       (Library — EF Core persistence)
 │     Core/AppDbContext.cs
@@ -50,21 +50,23 @@ TemplateTCPServer.sln
 │     Packets/IPacketHandler.cs            → marker interface
 │     Packets/PacketHandlerRegistry.cs     → builds MsgId→(type,method,reqType,reply) map
 │     Packets/PacketDispatcher.cs          → per-packet scope; parses request, frames reply
-│     Generated/PingTcp.cs                 → generated PingServiceBase (forked plugin, §4.5)
+│     protos/*.proto                       → IDL drop folder (git-ignored); messages + bases
+│                                            generated from here by Raphael.Tcp.Tools (§4.5)
+│     Generated/PingTcp.cs                 → generated PingServiceBase (package plugin, §4.5)
 │     Handlers/PingHandler.cs              → example handler: overrides PingServiceBase
 │     Services/ExampleService.cs           → IExampleService + impl (example "service")
 │     GameServerExtensions.cs              → AddGameServer(this IServiceCollection)
 │
-├── TemplateTCPServer.SDKServer  (Library — login/HTTP only, no Main)
-│     Controllers/SDKController.cs
-│     Services/AuthService.cs              → IAuthService + impl (one file)
-│     SdkServerExtensions.cs              → AddSdkServer(this IServiceCollection)
-│
-└── grpc/                          (forked gRPC; builds the TCP codegen plugin — §4.5)
-      src/compiler/csharp_generator.cc    → `tcp` mode: emits <Service>Base : IPacketHandler
-      src/compiler/csharp_plugin.cc        → parses the `tcp` + type-name options
-      build.bat                            → builds _build/grpc_csharp_plugin.exe
+└── TemplateTCPServer.SDKServer  (Library — login/HTTP only, no Main)
+      Controllers/SDKController.cs
+      Services/AuthService.cs              → IAuthService + impl (one file)
+      SdkServerExtensions.cs              → AddSdkServer(this IServiceCollection)
 ```
+
+> The TCP codegen plugin is **not** in this repo. It's a fork of gRPC's C# plugin,
+> published as the **`Raphael.Tcp.Tools`** NuGet package (the fork's source lives in a
+> separate grpc repo). GameServer consumes it as a `<PackageReference>` — no local
+> protoc, plugin binary, or grpc clone is needed to build. See §4.5.
 
 Reference graph (no cycles):
 
@@ -334,8 +336,9 @@ public sealed class PingHandler(
 
 `PingHandler` is the bundled **example** demonstrating the full chain; the DB call is
 guarded so it still replies when no database is configured. The generated base
-(`PingServiceBase`) lives in `TemplateTCPServer.GameServer/Generated/PingTcp.cs`; the
-message types (`PingRequest`, `PongReply`, …) in `TemplateTCPServer.Common/Generated/Ping.cs`.
+(`PingServiceBase`) lands in `TemplateTCPServer.GameServer/Generated/PingTcp.cs`; the
+message types (`PingRequest`, `PongReply`, …) in GameServer's `obj/` — both produced from
+`protos/` by the `Raphael.Tcp.Tools` package at build time (§4.5), neither committed.
 
 ### 4.3 `PacketDispatcher` — parse, resolve per scope, invoke, reply (singleton)
 
@@ -414,11 +417,12 @@ public static class GameServerExtensions
 3. Subclass the base and `override` the new RPC. It's auto-discovered and auto-registered —
    no change to `AddGameServer` (only register any *new service* it depends on).
 
-### 4.5 Code generation — forked `grpc_csharp_plugin` (`tcp` mode)
+### 4.5 Code generation — the `Raphael.Tcp.Tools` package (`tcp` mode)
 
-The base classes are generated by a **fork of gRPC's C# plugin** (`grpc/`, built by
-`grpc/build.bat` → `grpc/_build/grpc_csharp_plugin.exe`). The fork adds a `tcp` generator
-mode that, instead of the usual gRPC service stub, emits:
+The base classes are generated at build time by **`Raphael.Tcp.Tools`**, a NuGet package
+that wraps a **fork of gRPC's C# plugin**. (The fork's source lives in a separate grpc repo,
+not in this tree.) The fork adds a `tcp` generator mode that, instead of the usual gRPC
+service stub, emits:
 
 ```csharp
 public abstract partial class PingServiceBase : IPacketHandler
@@ -437,26 +441,42 @@ public abstract partial class PingServiceBase : IPacketHandler
   carries no project-specific namespace. `MsgId` is taken from the proto's `csharp_namespace`.
 - Streaming rpcs are skipped (the dispatcher is unary-only).
 
-Regenerate with two `protoc` runs — messages to `Common/Generated`, the TCP base to
-`GameServer/Generated`:
+**Generation is automatic on `dotnet build`** — no manual `protoc` runs, no local plugin
+binary, no grpc clone. The package (and its `Grpc.Tools` dependency) bring their own protoc
+and run codegen as an MSBuild step. To regenerate, just drop/edit a `.proto` and build.
 
+Setup is entirely in [TemplateTCPServer.GameServer.csproj](TemplateTCPServer.GameServer/TemplateTCPServer.GameServer.csproj):
+
+```xml
+<PackageReference Include="Raphael.Tcp.Tools" Version="1.0.0" />
+
+<PropertyGroup>
+  <RaphaelTcpIPacketHandler>TemplateTCPServer.GameServer.Packets.IPacketHandler</RaphaelTcpIPacketHandler>
+  <RaphaelTcpPacketHandlerAttr>TemplateTCPServer.GameServer.Packets.PacketHandlerAttribute</RaphaelTcpPacketHandlerAttr>
+  <RaphaelTcpConnection>TemplateTCPServer.GameServer.Networking.Connection</RaphaelTcpConnection>
+</PropertyGroup>
+
+<ItemGroup>
+  <Protobuf Include="protos\**\*.proto" GrpcServices="None" />
+</ItemGroup>
 ```
-REM messages
-protoc --proto_path=TemplateTCPServer.Common\Protocol ^
-  --csharp_out=TemplateTCPServer.Common\Generated ping.proto
 
-REM TCP base (forked plugin + tcp option + the three server-side type FQNs)
-protoc --proto_path=TemplateTCPServer.Common\Protocol ^
-  --grpc_out=TemplateTCPServer.GameServer\Generated ^
-  --grpc_opt=tcp,ipackethandler=TemplateTCPServer.GameServer.Packets.IPacketHandler,packethandler_attr=TemplateTCPServer.GameServer.Packets.PacketHandler,connection=TemplateTCPServer.GameServer.Networking.Connection ^
-  --plugin=protoc-gen-grpc=grpc\_build\grpc_csharp_plugin.exe ping.proto
-```
+- Drop `.proto` files into `TemplateTCPServer.GameServer/protos/` (git-ignored). On build:
+  **messages** are generated by `Grpc.Tools` into `obj/`; the **TCP base** (`*Tcp.cs`) by the
+  forked plugin into `Generated/`. Both are compiled in; neither is committed.
+- The `RaphaelTcp*` properties supply the three server-side type names the generator needs
+  (they are generator options, so the plugin itself carries no project-specific namespace).
+  `MsgId` is taken from the proto's `csharp_namespace`.
 
-> The TCP base must live in **GameServer** (it references `IPacketHandler`/`Connection`),
-> while the messages live in **Common** (transport-neutral, depend only on `Google.Protobuf`).
+> The package generates **messages and the TCP base together in GameServer** — the base
+> references `IPacketHandler`/`Connection`, so it must live there, and the messages follow.
+> (Common no longer hosts codegen; it depends only on `Google.Protobuf` for the runtime types.)
 > This is also why the proto/override model is *not* gRPC: gRPC runs over HTTP/2 and its
 > generated base takes `ServerCallContext` — unusable on a raw socket. The fork keeps the
 > generation ergonomics and swaps the transport-bound parts for `Connection` + `MsgId`.
+>
+> The package is **Windows-x64 only** in 1.0.0; other platforms fail the build with a clear
+> message (the fork must be built per-platform to extend it).
 
 ---
 
@@ -467,9 +487,11 @@ protoc --proto_path=TemplateTCPServer.Common\Protocol ^
 - `RawPacket : BasePacket` — minimal concrete packet the framing layer produces.
 - `IPacketSerializer` — `Deserialize(MsgId, payload)` / `Serialize(packet)`; default
   `PassthroughPacketSerializer` keeps the payload bytes as-is. Message bodies are encoded
-  with **protobuf** (the generated message types in `Common/Generated`); the dispatcher does
-  that (de)serialization per handler, so the framing layer itself stays bytes-only.
-- `ping.proto` (`Protocol/ping.proto`) — the IDL: the `PingService` rpcs and their messages.
+  with **protobuf** (the generated message types, produced into GameServer's `obj/` from
+  `protos/`); the dispatcher does that (de)serialization per handler, so the framing layer
+  itself stays bytes-only.
+- `ping.proto` (`TemplateTCPServer.GameServer/protos/ping.proto`) — the example IDL: the
+  `PingService` rpcs and their messages.
   Source of truth for both the message types and the generated handler base (§4.5).
 - **Framing** (`PacketFramer`, synchronous): wire format
   `[4-byte big-endian length][2-byte big-endian MsgId][payload]`.

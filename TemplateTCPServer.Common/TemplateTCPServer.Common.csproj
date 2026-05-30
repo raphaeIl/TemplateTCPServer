@@ -8,17 +8,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Runtime support for the protoc-generated message types in Generated/. -->
+    <!-- Runtime support for protobuf message types (generated in GameServer via
+         the Raphael.Tcp.Tools package; messages live in the ping.proto namespace). -->
     <PackageReference Include="Google.Protobuf" Version="3.28.3" />
-    <!-- Stock gRPC codegen: build-time protoc + grpc_csharp_plugin (the normal MS-docs way). -->
-    <PackageReference Include="Grpc.Tools" Version="2.66.0" PrivateAssets="All" />
-    <PackageReference Include="Grpc.Core.Api" Version="2.66.0" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <!-- Operators drop .proto files into protos/ (git-ignored, updated out-of-band).
-         Everything present at build time is compiled to C# automatically. -->
-    <Protobuf Include="protos\**\*.proto" GrpcServices="Server" />
   </ItemGroup>
 
 </Project>

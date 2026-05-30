@@ -14,6 +14,27 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="8.0.2" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
     <PackageReference Include="Google.Protobuf" Version="3.28.3" />
+    <!-- Generates protobuf messages AND the synchronous TCP service bases from protos/
+         (forked grpc_csharp_plugin, shipped in the package). Replaces the old local
+         protoc/plugin invocation — no machine-specific paths. -->
+    <PackageReference Include="Raphael.Tcp.Tools" Version="1.0.0" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- The forked plugin bakes these fully-qualified type names into the generated base. -->
+    <RaphaelTcpIPacketHandler>TemplateTCPServer.GameServer.Packets.IPacketHandler</RaphaelTcpIPacketHandler>
+    <RaphaelTcpPacketHandlerAttr>TemplateTCPServer.GameServer.Packets.PacketHandlerAttribute</RaphaelTcpPacketHandlerAttr>
+    <RaphaelTcpConnection>TemplateTCPServer.GameServer.Networking.Connection</RaphaelTcpConnection>
+    <!-- TCP base (*Tcp.cs) output dir (package default is also Generated/; explicit here). -->
+    <RaphaelTcpOutDir>$(MSBuildProjectDirectory)\Generated</RaphaelTcpOutDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Operators drop .proto files into protos/ (git-ignored). The package generates
+         messages (via Grpc.Tools) and the TCP base from everything here.
+         OutputDir puts the generated messages in Generated/ alongside the base
+         (instead of the Grpc.Tools default of obj/). -->
+    <Protobuf Include="protos\**\*.proto" GrpcServices="None" OutputDir="Generated" />
   </ItemGroup>
 
   <ItemGroup>
