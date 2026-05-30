@@ -19,19 +19,33 @@ namespace TemplateTCPServer.GameServer.Packets
             {
                 foreach (var method in type.GetMethods())
                 {
-                    var attr = method.GetCustomAttribute<PacketHandlerAttribute>(inherit: false);
+                    // Look on the method itself, then on its base definition. The latter lets a
+                    // handler declare its RPC surface once on virtual methods of an abstract base
+                    // (the "proto" base) and have concrete overrides inherit the [PacketHandler]
+                    // mapping without re-declaring the attribute. `method` stays the most-derived
+                    // MethodInfo, so Invoke dispatches to the override.
+                    var attr = method.GetCustomAttribute<PacketHandlerAttribute>(inherit: true)
+                               ?? method.GetBaseDefinition().GetCustomAttribute<PacketHandlerAttribute>(inherit: false);
                     if (attr is null)
                         continue;
 
-                    if (!_map.TryAdd(attr.MsgId, new HandlerEntry(type, method)))
+                    // The generated handler signature is (TRequest request, Connection connection).
+                    // Capture the request parameter type so the dispatcher can parse the
+                    // packet payload into it; null if the method takes no typed request.
+                    var requestType = method.GetParameters().Length > 0
+                        ? method.GetParameters()[0].ParameterType
+                        : null;
+
+                    var entry = new HandlerEntry(type, method, requestType, attr.ReplyMsgId);
+                    if (!_map.TryAdd(attr.MsgId, entry))
                     {
                         logger?.LogWarning("Duplicate handler for {MsgId}; {Type}.{Method} ignored",
                             attr.MsgId, type.Name, method.Name);
                         continue;
                     }
 
-                    logger?.LogInformation("Mapped {MsgId} -> {Type}.{Method}",
-                        attr.MsgId, type.Name, method.Name);
+                    logger?.LogInformation("Mapped {MsgId} -> {Type}.{Method} (reply: {Reply})",
+                        attr.MsgId, type.Name, method.Name, attr.ReplyMsgId);
                 }
             }
         }
@@ -41,5 +55,5 @@ namespace TemplateTCPServer.GameServer.Packets
         public IEnumerable<Type> HandlerTypes => _map.Values.Select(e => e.Type).Distinct();
     }
 
-    public readonly record struct HandlerEntry(Type Type, MethodInfo Method);
+    public readonly record struct HandlerEntry(Type Type, MethodInfo Method, Type? RequestType, MsgId ReplyMsgId);
 }

@@ -1,0 +1,4 @@
+# Operator-supplied .proto files are dropped here at setup time and updated
+# out-of-band. They are compiled to C# at build (see TemplateTCPServer.Common.csproj
+# <Protobuf Include="protos\**\*.proto" />). Do not commit them.
+*.proto

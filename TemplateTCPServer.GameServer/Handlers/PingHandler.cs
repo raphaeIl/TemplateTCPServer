@@ -1,19 +1,21 @@
 using Microsoft.Extensions.Logging;
 using TemplateTCPServer.Common.Protocol;
 using TemplateTCPServer.GameServer.Networking;
-using TemplateTCPServer.GameServer.Packets;
 using TemplateTCPServer.GameServer.Services;
 
 namespace TemplateTCPServer.GameServer.Handlers
 {
-    // Example handler. Implement IPacketHandler, take dependencies as primary-constructor
-    // parameters, and tag a (Connection, BasePacket) method with [PacketHandler(MsgId)].
+    // Implementation of the PingService "proto". Derives from the generated
+    // PingServiceBase (Generated/PingTcp.cs) and overrides the RPC methods with
+    // typed protobuf request/response. The [PacketHandler(MsgId.X, MsgId.Y)]
+    // mapping is inherited from the base — no need to re-declare it here. The
+    // dispatcher parses the payload into the request, invokes the override, and
+    // frames the returned message as the reply packet.
     public sealed class PingHandler(
         IExampleService example,
-        ILogger<PingHandler> logger) : IPacketHandler
+        ILogger<PingHandler> logger) : PingService.PingServiceBase
     {
-        [PacketHandler(MsgId.Ping)]
-        public void HandlePing(Connection connection, BasePacket packet)
+        public override PongReply Ping(PingRequest request, Connection connection)
         {
             // Guarded so the sample still replies when no database is configured.
             try
@@ -26,7 +28,8 @@ namespace TemplateTCPServer.GameServer.Handlers
                 logger.LogWarning(ex, "Ping from {Id} (db unavailable, replying anyway)", connection.Id);
             }
 
-            connection.Send(new RawPacket(MsgId.Pong, ReadOnlyMemory<byte>.Empty));
+            return new PongReply();
         }
+
     }
 }

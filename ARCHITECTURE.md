@@ -10,6 +10,7 @@
 > - **Execution model:** **fully synchronous, thread-per-connection.** No `async`/`await`, no `Task<T>`, no `CancellationToken` on the app's own methods. Chosen because this is a low-population private server where the simplicity is worth the one parked thread per connected client. (See §7 for the trade-off.)
 > - **DI scoping:** one `IServiceScope` **per packet** (the analog of an HTTP request scope).
 > - **Handler resolution:** `[PacketHandler(MsgId)]` attribute scanning builds a routing map at startup, but handlers are **registered in DI** and resolved per-scope (no `Activator.CreateInstance`).
+> - **Handler shape:** handlers are **proto-defined** — a `.proto` `service` is code-generated (by a forked `grpc_csharp_plugin`, §4.5) into an abstract `<Service>Base : IPacketHandler` you `override`. RPC methods take a **typed protobuf request** + `Connection` and **return** a typed response; the dispatcher (de)serializes and frames the reply. (gRPC ergonomics, raw-TCP transport — no HTTP/2, no `ServerCallContext`.)
 > - **Layering:** `Handler → Service → Repository → DbContext`.
 > - **SDKServer** = login/HTTP only. **GameServer** = the main server (the TCP side).
 
@@ -24,13 +25,15 @@ TemplateTCPServer.sln
 │     Program.cs                 → builds ONE host, wires all DI, runs it
 │     appsettings.json           → Postgres conn string, GameServer:Port, Kestrel, Serilog
 │
-├── TemplateTCPServer.Common     (Library — protocol, dependency-free)
+├── TemplateTCPServer.Common     (Library — protocol; depends only on Google.Protobuf)
 │     Protocol/MsgId.cs                    → enum (None, Ping, Pong)
 │     Protocol/BasePacket.cs               → abstract envelope (MsgId + payload)
 │     Protocol/RawPacket.cs                → minimal concrete packet
 │     Protocol/IPacketSerializer.cs        → bytes ⇄ BasePacket body
 │     Protocol/PassthroughPacketSerializer.cs → default no-op serializer
 │     Protocol/PacketFramer.cs             → length-prefixed frame read/write (sync)
+│     Protocol/ping.proto                  → IDL: PingService rpcs + messages
+│     Generated/Ping.cs                    → protoc-generated message types
 │
 ├── TemplateTCPServer.Data       (Library — EF Core persistence)
 │     Core/AppDbContext.cs
@@ -43,18 +46,24 @@ TemplateTCPServer.sln
 │     Hosting/GameServerHostedService.cs   → IHostedService, owns TcpListener
 │     Networking/Connection.cs             → per-connection blocking read loop (not in DI)
 │     Networking/ConnectionManager.cs      → tracks live connections (singleton)
-│     Packets/PacketHandlerAttribute.cs    → [PacketHandler(MsgId)]
+│     Packets/PacketHandlerAttribute.cs    → [PacketHandler(MsgId, replyMsgId)]
 │     Packets/IPacketHandler.cs            → marker interface
-│     Packets/PacketHandlerRegistry.cs     → builds MsgId→(type,method) map at startup
-│     Packets/PacketDispatcher.cs          → resolves handler from a per-packet DI scope
-│     Handlers/PingHandler.cs              → example handler ("controller")
+│     Packets/PacketHandlerRegistry.cs     → builds MsgId→(type,method,reqType,reply) map
+│     Packets/PacketDispatcher.cs          → per-packet scope; parses request, frames reply
+│     Generated/PingTcp.cs                 → generated PingServiceBase (forked plugin, §4.5)
+│     Handlers/PingHandler.cs              → example handler: overrides PingServiceBase
 │     Services/ExampleService.cs           → IExampleService + impl (example "service")
 │     GameServerExtensions.cs              → AddGameServer(this IServiceCollection)
 │
-└── TemplateTCPServer.SDKServer  (Library — login/HTTP only, no Main)
-      Controllers/SDKController.cs
-      Services/AuthService.cs              → IAuthService + impl (one file)
-      SdkServerExtensions.cs               → AddSdkServer(this IServiceCollection)
+├── TemplateTCPServer.SDKServer  (Library — login/HTTP only, no Main)
+│     Controllers/SDKController.cs
+│     Services/AuthService.cs              → IAuthService + impl (one file)
+│     SdkServerExtensions.cs              → AddSdkServer(this IServiceCollection)
+│
+└── grpc/                          (forked gRPC; builds the TCP codegen plugin — §4.5)
+      src/compiler/csharp_generator.cc    → `tcp` mode: emits <Service>Base : IPacketHandler
+      src/compiler/csharp_plugin.cc        → parses the `tcp` + type-name options
+      build.bat                            → builds _build/grpc_csharp_plugin.exe
 ```
 
 Reference graph (no cycles):
@@ -256,56 +265,58 @@ dotnet ef database update              -p TemplateTCPServer.Data -s TemplateTCPS
 
 ## 4. Packet handler system
 
+Handlers are **proto-defined and code-generated**. A `.proto` `service` describes the RPC
+surface; a *forked* `grpc_csharp_plugin` (see §4.5) generates an abstract
+`<Service>Base : IPacketHandler` whose virtual methods carry the `[PacketHandler(...)]`
+routing attribute and take **typed protobuf** request/response objects. You subclass the
+base and `override` the RPCs — the gRPC "extend the base, override the rpcs" model, but
+dispatched over the raw TCP listener instead of HTTP/2 (no `ServerCallContext`).
+
 The routing logic is split in two: discovery (reflection, once at startup) and dispatch
 (per packet, via DI). No `Activator.CreateInstance`.
 
 ### 4.1 `PacketHandlerRegistry` — build the routing map once (singleton)
 
-Reflection is used **only** to discover the `MsgId → (handler type, method)` mapping; no
-instances are created here.
+Reflection discovers the `MsgId → HandlerEntry` mapping; no instances are created here. Two
+details matter:
+
+- It reads `[PacketHandler]` via `GetBaseDefinition()` so the attribute declared on the
+  **generated abstract base** is found on the concrete **override** (the override itself
+  carries no attribute), and binds to the most-derived `MethodInfo` so dispatch hits your code.
+- Each entry captures the method's **request parameter type** (to parse the payload into) and
+  the **reply `MsgId`** (to frame the return value).
 
 ```csharp
-public sealed class PacketHandlerRegistry
+foreach (var method in type.GetMethods())
 {
-    private readonly Dictionary<MsgId, HandlerEntry> _map = new();
+    var attr = method.GetCustomAttribute<PacketHandlerAttribute>(inherit: true)
+               ?? method.GetBaseDefinition().GetCustomAttribute<PacketHandlerAttribute>(inherit: false);
+    if (attr is null) continue;
 
-    public PacketHandlerRegistry(IEnumerable<Assembly> handlerAssemblies, ILogger<PacketHandlerRegistry>? logger = null)
-    {
-        var handlerTypes = handlerAssemblies
-            .SelectMany(a => a.GetTypes())
-            .Where(t => typeof(IPacketHandler).IsAssignableFrom(t)
-                        && t is { IsInterface: false, IsAbstract: false });
-
-        foreach (var type in handlerTypes)
-            foreach (var method in type.GetMethods())
-            {
-                var attr = method.GetCustomAttribute<PacketHandlerAttribute>(false);
-                if (attr is null) continue;
-                _map.TryAdd(attr.MsgId, new HandlerEntry(type, method));
-            }
-    }
-
-    public bool TryGet(MsgId id, out HandlerEntry entry) => _map.TryGetValue(id, out entry);
-    public IEnumerable<Type> HandlerTypes => _map.Values.Select(e => e.Type).Distinct();
+    var requestType = method.GetParameters().Length > 0
+        ? method.GetParameters()[0].ParameterType : null;
+    _map.TryAdd(attr.MsgId, new HandlerEntry(type, method, requestType, attr.ReplyMsgId));
 }
 
-public readonly record struct HandlerEntry(Type Type, MethodInfo Method);
+public readonly record struct HandlerEntry(Type Type, MethodInfo Method, Type? RequestType, MsgId ReplyMsgId);
 ```
 
-### 4.2 Handlers — attribute on methods, **synchronous, return `void`**
+(Abstract types are filtered out, so the generated `<Service>Base` is never itself
+registered — only your concrete subclass is.)
 
-A handler implements the `IPacketHandler` marker, takes its dependencies via a **primary
-constructor**, and tags a `(Connection, BasePacket)` method returning `void`:
+### 4.2 Handlers — override the generated base with **typed** request/response
+
+Subclass the generated `<Service>Base`, inject dependencies via a **primary constructor**,
+and `override` each RPC. No `[PacketHandler]` attribute here — it's inherited from the base.
+Methods are **synchronous**: they take `(TRequest request, Connection connection)` and
+**return** the response message (the dispatcher sends it).
 
 ```csharp
-public interface IPacketHandler { }   // marker
-
 public sealed class PingHandler(
     IExampleService example,                              // ← constructor injection works
-    ILogger<PingHandler> logger) : IPacketHandler
+    ILogger<PingHandler> logger) : PingService.PingServiceBase
 {
-    [PacketHandler(MsgId.Ping)]
-    public void HandlePing(Connection connection, BasePacket packet)
+    public override PongReply Ping(PingRequest request, Connection connection)
     {
         try
         {
@@ -316,52 +327,56 @@ public sealed class PingHandler(
         {
             logger.LogWarning(ex, "Ping from {Id} (db unavailable, replying anyway)", connection.Id);
         }
-        connection.Send(new RawPacket(MsgId.Pong, ReadOnlyMemory<byte>.Empty));
+        return new PongReply();                            // dispatcher frames this as MsgId.Pong
     }
 }
 ```
 
 `PingHandler` is the bundled **example** demonstrating the full chain; the DB call is
-guarded so it still replies when no database is configured.
+guarded so it still replies when no database is configured. The generated base
+(`PingServiceBase`) lives in `TemplateTCPServer.GameServer/Generated/PingTcp.cs`; the
+message types (`PingRequest`, `PongReply`, …) in `TemplateTCPServer.Common/Generated/Ping.cs`.
 
-### 4.3 `PacketDispatcher` — resolve per scope and invoke (singleton)
+### 4.3 `PacketDispatcher` — parse, resolve per scope, invoke, reply (singleton)
 
-A singleton (stateless), but for **each packet** it opens a fresh DI scope and resolves the
-handler from it, so the handler and everything it injects (`IExampleService`,
-`IAccountRepository`, `AppDbContext`) are scoped to a single packet. This is the TCP-side
-equivalent of MVC's per-request controller activation — there is no framework doing it for
-a socket message, so the dispatcher does.
+A singleton (stateless), but for **each packet** it opens a fresh DI scope, resolves the
+handler from it (so it and everything it injects — `IExampleService`, `IAccountRepository`,
+`AppDbContext` — are scoped to a single packet), parses the payload into the handler's
+protobuf request type, invokes the override, and frames the returned message as the reply.
+This is the TCP-side equivalent of MVC's per-request controller activation + model binding.
 
 ```csharp
-public sealed class PacketDispatcher(
-    IServiceProvider rootProvider,
-    PacketHandlerRegistry registry,
-    ILogger<PacketDispatcher> logger)
+public void Dispatch(Connection connection, BasePacket packet)
 {
-    public void Dispatch(Connection connection, BasePacket packet)
+    if (!registry.TryGet(packet.MsgId, out var entry))
     {
-        if (!registry.TryGet(packet.MsgId, out var entry))
-        {
-            logger.LogWarning("No handler for {MsgId}; packet dropped", packet.MsgId);
-            return;
-        }
-
-        using var scope = rootProvider.CreateScope();            // one DI scope per packet
-        var handler = scope.ServiceProvider.GetRequiredService(entry.Type);
-        try
-        {
-            entry.Method.Invoke(handler, new object[] { connection, packet });
-        }
-        catch (Exception ex)
-        {
-            var actual = (ex as TargetInvocationException)?.InnerException ?? ex;
-            logger.LogError(actual, "Handler {Type}.{Method} failed for {MsgId}",
-                entry.Type.Name, entry.Method.Name, packet.MsgId);
-        }
-        // scope disposed here -> DbContext disposed
+        logger.LogWarning("No handler for {MsgId}; packet dropped", packet.MsgId);
+        return;
     }
+
+    using var scope = rootProvider.CreateScope();            // one DI scope per packet
+    var handler = scope.ServiceProvider.GetRequiredService(entry.Type);
+    try
+    {
+        var request = ParseRequest(entry.RequestType, packet.Payload);   // protobuf Parser
+        var result  = entry.Method.Invoke(handler, new object?[] { request, connection });
+
+        if (entry.ReplyMsgId != MsgId.None && result is IMessage reply)
+            connection.Send(new RawPacket(entry.ReplyMsgId, reply.ToByteArray()));
+    }
+    catch (Exception ex)
+    {
+        var actual = (ex as TargetInvocationException)?.InnerException ?? ex;
+        logger.LogError(actual, "Handler {Type}.{Method} failed for {MsgId}",
+            entry.Type.Name, entry.Method.Name, packet.MsgId);
+    }
+    // scope disposed here -> DbContext disposed
 }
 ```
+
+`ParseRequest` resolves the generated static `MessageParser` for the request type (cached per
+type) and parses `packet.Payload`. The wire payload is therefore the protobuf-encoded message;
+`PassthroughPacketSerializer` still frames it unchanged (the framing layer stays bytes-only).
 
 ### 4.4 DI extension — `AddGameServer`
 
@@ -392,10 +407,56 @@ public static class GameServerExtensions
 }
 ```
 
-**To add a handler:** create a class implementing `IPacketHandler`, take dependencies in the
-constructor, and tag a `(Connection, BasePacket)` method with `[PacketHandler(MsgId.X)]`.
-It is auto-discovered and auto-registered — no change to `AddGameServer` needed (only
-register any *new service* it depends on).
+**To add a handler:**
+1. Add the `rpc` and its request/response `message`s to a `.proto` (rpc name must match a
+   `MsgId` member; response name minus `Reply`/`Response` must match the reply `MsgId` member).
+2. Regenerate (§4.5) — you get the message types and a `<Service>Base`.
+3. Subclass the base and `override` the new RPC. It's auto-discovered and auto-registered —
+   no change to `AddGameServer` (only register any *new service* it depends on).
+
+### 4.5 Code generation — forked `grpc_csharp_plugin` (`tcp` mode)
+
+The base classes are generated by a **fork of gRPC's C# plugin** (`grpc/`, built by
+`grpc/build.bat` → `grpc/_build/grpc_csharp_plugin.exe`). The fork adds a `tcp` generator
+mode that, instead of the usual gRPC service stub, emits:
+
+```csharp
+public abstract partial class PingServiceBase : IPacketHandler
+{
+    [PacketHandler(MsgId.Ping, MsgId.Pong)]                       // request id, reply id
+    public virtual PongReply Ping(PingRequest request, Connection connection)
+        => throw new NotImplementedException("Ping is not implemented.");
+}
+```
+
+- The request `MsgId` comes from the **rpc name** (`Ping` → `MsgId.Ping`); the reply `MsgId`
+  from the **response type name** minus a `Reply`/`Response` suffix (`PongReply` → `MsgId.Pong`).
+  Both are matched against the `MsgId` enum.
+- The server-side type names (`IPacketHandler`, the `PacketHandler` attribute, `Connection`)
+  are **not** hardcoded in the generator — they're passed as generator options, so the fork
+  carries no project-specific namespace. `MsgId` is taken from the proto's `csharp_namespace`.
+- Streaming rpcs are skipped (the dispatcher is unary-only).
+
+Regenerate with two `protoc` runs — messages to `Common/Generated`, the TCP base to
+`GameServer/Generated`:
+
+```
+REM messages
+protoc --proto_path=TemplateTCPServer.Common\Protocol ^
+  --csharp_out=TemplateTCPServer.Common\Generated ping.proto
+
+REM TCP base (forked plugin + tcp option + the three server-side type FQNs)
+protoc --proto_path=TemplateTCPServer.Common\Protocol ^
+  --grpc_out=TemplateTCPServer.GameServer\Generated ^
+  --grpc_opt=tcp,ipackethandler=TemplateTCPServer.GameServer.Packets.IPacketHandler,packethandler_attr=TemplateTCPServer.GameServer.Packets.PacketHandler,connection=TemplateTCPServer.GameServer.Networking.Connection ^
+  --plugin=protoc-gen-grpc=grpc\_build\grpc_csharp_plugin.exe ping.proto
+```
+
+> The TCP base must live in **GameServer** (it references `IPacketHandler`/`Connection`),
+> while the messages live in **Common** (transport-neutral, depend only on `Google.Protobuf`).
+> This is also why the proto/override model is *not* gRPC: gRPC runs over HTTP/2 and its
+> generated base takes `ServerCallContext` — unusable on a raw socket. The fork keeps the
+> generation ergonomics and swaps the transport-bound parts for `Connection` + `MsgId`.
 
 ---
 
@@ -405,7 +466,11 @@ register any *new service* it depends on).
 - `abstract class BasePacket` — carries `MsgId` + a `ReadOnlyMemory<byte> Payload`.
 - `RawPacket : BasePacket` — minimal concrete packet the framing layer produces.
 - `IPacketSerializer` — `Deserialize(MsgId, payload)` / `Serialize(packet)`; default
-  `PassthroughPacketSerializer` does no body encoding (swap for JSON/binary later).
+  `PassthroughPacketSerializer` keeps the payload bytes as-is. Message bodies are encoded
+  with **protobuf** (the generated message types in `Common/Generated`); the dispatcher does
+  that (de)serialization per handler, so the framing layer itself stays bytes-only.
+- `ping.proto` (`Protocol/ping.proto`) — the IDL: the `PingService` rpcs and their messages.
+  Source of truth for both the message types and the generated handler base (§4.5).
 - **Framing** (`PacketFramer`, synchronous): wire format
   `[4-byte big-endian length][2-byte big-endian MsgId][payload]`.
   `Read` blocks on `stream.Read` until a whole frame is assembled, returns `null` on a clean
