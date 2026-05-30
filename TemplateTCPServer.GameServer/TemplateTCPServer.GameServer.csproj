@@ -8,34 +8,30 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.1" />
+    <!-- DI + logging are used directly by AddGameServer; the TCP framework's other
+         Microsoft.Extensions.* deps (Hosting/Configuration) now come transitively from Common. -->
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="8.0.2" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
-    <PackageReference Include="Google.Protobuf" Version="3.28.3" />
-    <!-- Generates protobuf messages AND the synchronous TCP service bases from protos/
-         (forked grpc_csharp_plugin, shipped in the package). Replaces the old local
-         protoc/plugin invocation — no machine-specific paths. -->
+    <!-- Google.Protobuf comes transitively from Common, where the message types now live. -->
+    <!-- Generates only the synchronous TCP service BASES from the shared protos
+         (forked grpc_csharp_plugin, shipped in the package). The protobuf MESSAGES are
+         generated in Common so low-level projects can share them without a dependency
+         cycle (see RaphaelTcpProtoDir below + Common.csproj <Protobuf>). -->
     <PackageReference Include="Raphael.Tcp.Tools" Version="1.0.0" />
   </ItemGroup>
 
   <PropertyGroup>
     <!-- The forked plugin bakes these fully-qualified type names into the generated base. -->
-    <RaphaelTcpIPacketHandler>TemplateTCPServer.GameServer.Packets.IPacketHandler</RaphaelTcpIPacketHandler>
-    <RaphaelTcpPacketHandlerAttr>TemplateTCPServer.GameServer.Packets.PacketHandlerAttribute</RaphaelTcpPacketHandlerAttr>
-    <RaphaelTcpConnection>TemplateTCPServer.GameServer.Networking.Connection</RaphaelTcpConnection>
+    <RaphaelTcpIPacketHandler>TemplateTCPServer.Common.Packets.IPacketHandler</RaphaelTcpIPacketHandler>
+    <RaphaelTcpPacketHandlerAttr>TemplateTCPServer.Common.Packets.PacketHandlerAttribute</RaphaelTcpPacketHandlerAttr>
+    <RaphaelTcpConnection>TemplateTCPServer.Common.Networking.Connection</RaphaelTcpConnection>
     <!-- TCP base (*Tcp.cs) output dir (package default is also Generated/; explicit here). -->
     <RaphaelTcpOutDir>$(MSBuildProjectDirectory)\Generated</RaphaelTcpOutDir>
+    <!-- The .proto files now live in Common (single source of truth, shared by the
+         message codegen there). Point the TCP-base generator at the same folder so the
+         generated PingServiceBase stays in sync with the messages it references. -->
+    <RaphaelTcpProtoDir>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\TemplateTCPServer.Common\protos'))</RaphaelTcpProtoDir>
   </PropertyGroup>
-
-  <ItemGroup>
-    <!-- Operators drop .proto files into protos/ (git-ignored). The package generates
-         messages (via Grpc.Tools) and the TCP base from everything here.
-         OutputDir puts the generated messages in Generated/ alongside the base
-         (instead of the Grpc.Tools default of obj/). -->
-    <Protobuf Include="protos\**\*.proto" GrpcServices="None" OutputDir="Generated" />
-  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\TemplateTCPServer.Common\TemplateTCPServer.Common.csproj" />

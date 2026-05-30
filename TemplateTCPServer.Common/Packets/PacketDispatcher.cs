@@ -4,9 +4,9 @@ using Google.Protobuf;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using TemplateTCPServer.Common.Protocol;
-using TemplateTCPServer.GameServer.Networking;
+using TemplateTCPServer.Common.Networking;
 
-namespace TemplateTCPServer.GameServer.Packets
+namespace TemplateTCPServer.Common.Packets
 {
     public sealed class PacketDispatcher(
         IServiceProvider rootProvider,

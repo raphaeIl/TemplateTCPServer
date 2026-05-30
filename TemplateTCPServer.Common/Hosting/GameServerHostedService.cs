@@ -4,10 +4,10 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using TemplateTCPServer.Common.Protocol;
-using TemplateTCPServer.GameServer.Networking;
-using TemplateTCPServer.GameServer.Packets;
+using TemplateTCPServer.Common.Networking;
+using TemplateTCPServer.Common.Packets;
 
-namespace TemplateTCPServer.GameServer.Hosting
+namespace TemplateTCPServer.Common.Hosting
 {
     public sealed class GameServerHostedService(
         PacketDispatcher dispatcher,

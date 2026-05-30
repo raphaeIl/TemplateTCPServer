@@ -1,9 +1,9 @@
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using TemplateTCPServer.Common.Protocol;
-using TemplateTCPServer.GameServer.Packets;
+using TemplateTCPServer.Common.Packets;
 
-namespace TemplateTCPServer.GameServer.Networking
+namespace TemplateTCPServer.Common.Networking
 {
     public sealed class Connection(
         TcpClient client,

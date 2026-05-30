@@ -2,7 +2,7 @@ using System.Reflection;
 using Microsoft.Extensions.Logging;
 using TemplateTCPServer.Common.Protocol;
 
-namespace TemplateTCPServer.GameServer.Packets
+namespace TemplateTCPServer.Common.Packets
 {
     public sealed class PacketHandlerRegistry
     {

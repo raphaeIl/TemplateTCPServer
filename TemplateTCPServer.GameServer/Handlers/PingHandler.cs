@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Logging;
 using TemplateTCPServer.Common.Protocol;
-using TemplateTCPServer.GameServer.Networking;
+using TemplateTCPServer.Common.Networking;
 using TemplateTCPServer.GameServer.Services;
 
 namespace TemplateTCPServer.GameServer.Handlers

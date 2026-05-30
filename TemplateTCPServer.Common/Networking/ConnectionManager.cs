@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace TemplateTCPServer.GameServer.Networking
+namespace TemplateTCPServer.Common.Networking
 {
     public sealed class ConnectionManager
     {

@@ -25,13 +25,20 @@ TemplateTCPServer.sln
 │     Program.cs                 → builds ONE host, wires all DI, runs it
 │     appsettings.json           → Postgres conn string, GameServer:Port, Kestrel, Serilog
 │
-├── TemplateTCPServer.Common     (Library — protocol; depends only on Google.Protobuf)
+├── TemplateTCPServer.Common     (Library — protocol + reusable TCP framework)
 │     Protocol/MsgId.cs                    → enum (None, Ping, Pong)
 │     Protocol/BasePacket.cs               → abstract envelope (MsgId + payload)
 │     Protocol/RawPacket.cs                → minimal concrete packet
 │     Protocol/IPacketSerializer.cs        → bytes ⇄ BasePacket body
 │     Protocol/PassthroughPacketSerializer.cs → default no-op serializer
 │     Protocol/PacketFramer.cs             → length-prefixed frame read/write (sync)
+│     Hosting/GameServerHostedService.cs   → IHostedService, owns TcpListener
+│     Networking/Connection.cs             → per-connection blocking read loop (not in DI)
+│     Networking/ConnectionManager.cs      → tracks live connections (singleton)
+│     Packets/PacketHandlerAttribute.cs    → [PacketHandler(MsgId, replyMsgId)]
+│     Packets/IPacketHandler.cs            → marker interface
+│     Packets/PacketHandlerRegistry.cs     → builds MsgId→(type,method,reqType,reply) map
+│     Packets/PacketDispatcher.cs          → per-packet scope; parses request, frames reply
 │     (no proto codegen here — the Raphael.Tcp.Tools package generates messages
 │      AND the TCP base together in GameServer; see §4.5)
 │
@@ -42,14 +49,7 @@ TemplateTCPServer.sln
 │     Repositories/AccountRepository.cs          → IAccountRepository + impl (one file)
 │     DataExtensions.cs                          → AddDataLayer(this IServiceCollection, config)
 │
-├── TemplateTCPServer.GameServer (Library — the MAIN TCP server)
-│     Hosting/GameServerHostedService.cs   → IHostedService, owns TcpListener
-│     Networking/Connection.cs             → per-connection blocking read loop (not in DI)
-│     Networking/ConnectionManager.cs      → tracks live connections (singleton)
-│     Packets/PacketHandlerAttribute.cs    → [PacketHandler(MsgId, replyMsgId)]
-│     Packets/IPacketHandler.cs            → marker interface
-│     Packets/PacketHandlerRegistry.cs     → builds MsgId→(type,method,reqType,reply) map
-│     Packets/PacketDispatcher.cs          → per-packet scope; parses request, frames reply
+├── TemplateTCPServer.GameServer (Library — the MAIN TCP server: services + handlers)
 │     protos/*.proto                       → IDL drop folder (git-ignored); messages + bases
 │                                            generated from here by Raphael.Tcp.Tools (§4.5)
 │     Generated/PingTcp.cs                 → generated PingServiceBase (package plugin, §4.5)
@@ -451,9 +451,9 @@ Setup is entirely in [TemplateTCPServer.GameServer.csproj](TemplateTCPServer.Gam
 <PackageReference Include="Raphael.Tcp.Tools" Version="1.0.0" />
 
 <PropertyGroup>
-  <RaphaelTcpIPacketHandler>TemplateTCPServer.GameServer.Packets.IPacketHandler</RaphaelTcpIPacketHandler>
-  <RaphaelTcpPacketHandlerAttr>TemplateTCPServer.GameServer.Packets.PacketHandlerAttribute</RaphaelTcpPacketHandlerAttr>
-  <RaphaelTcpConnection>TemplateTCPServer.GameServer.Networking.Connection</RaphaelTcpConnection>
+  <RaphaelTcpIPacketHandler>TemplateTCPServer.Common.Packets.IPacketHandler</RaphaelTcpIPacketHandler>
+  <RaphaelTcpPacketHandlerAttr>TemplateTCPServer.Common.Packets.PacketHandlerAttribute</RaphaelTcpPacketHandlerAttr>
+  <RaphaelTcpConnection>TemplateTCPServer.Common.Networking.Connection</RaphaelTcpConnection>
 </PropertyGroup>
 
 <ItemGroup>

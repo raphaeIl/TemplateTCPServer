@@ -1,9 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using TemplateTCPServer.Common.Protocol;
-using TemplateTCPServer.GameServer.Hosting;
-using TemplateTCPServer.GameServer.Networking;
-using TemplateTCPServer.GameServer.Packets;
+using TemplateTCPServer.Common.Hosting;
+using TemplateTCPServer.Common.Networking;
+using TemplateTCPServer.Common.Packets;
 
 namespace TemplateTCPServer.GameServer
 {
