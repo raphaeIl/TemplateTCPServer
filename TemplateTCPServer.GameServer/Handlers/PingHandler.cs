@@ -15,7 +15,7 @@ namespace TemplateTCPServer.GameServer.Handlers
         IExampleService example,
         ILogger<PingHandler> logger) : PingService.PingServiceBase
     {
-        public override PongReply Ping(PingRequest request, Connection connection)
+        public override void Ping(PingRequest request, Connection connection)
         {
             // Guarded so the sample still replies when no database is configured.
             try
@@ -28,7 +28,7 @@ namespace TemplateTCPServer.GameServer.Handlers
                 logger.LogWarning(ex, "Ping from {Id} (db unavailable, replying anyway)", connection.Id);
             }
 
-            return new PongReply();
+            
         }
 
     }
