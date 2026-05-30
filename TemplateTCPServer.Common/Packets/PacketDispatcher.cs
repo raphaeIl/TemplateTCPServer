@@ -33,8 +33,8 @@ namespace TemplateTCPServer.Common.Packets
             {
                 // Parse the payload into the handler's protobuf request type, then invoke
                 // the generated signature: (TRequest request, Connection connection).
-                var request = ParseRequest(entry.RequestType, packet.Payload);
-                var result = entry.Method.Invoke(handler, new object?[] { request, connection });
+                IMessage? request = ParseRequest(entry.RequestType, packet.Payload);
+                object? result = entry.Method.Invoke(handler, new object?[] { request, connection });
 
                 // If the handler maps to a reply MsgId, frame its returned message and send it.
                 if (entry.ReplyMsgId != MsgId.None && result is IMessage reply)
@@ -50,9 +50,17 @@ namespace TemplateTCPServer.Common.Packets
             }
         }
 
+        // Strongly-typed parse for call sites that know the message type at compile time.
+        // Uses the generated static `Parser` (a MessageParser<T>) so there is no boxing or
+        // reflection on the hot path.
+        public static T ParseRequest<T>(ReadOnlyMemory<byte> payload) where T : IMessage<T>
+            => MessageParserCache<T>.Parser.ParseFrom(payload.Span);
+
         // Resolves the generated `MessageParser` for a protobuf request type and parses the
-        // payload. Returns null when the handler declares no request type.
-        private object? ParseRequest(Type? requestType, ReadOnlyMemory<byte> payload)
+        // payload. Returns null when the handler declares no request type. The reflection
+        // path is only reached by the runtime dispatcher, which knows the type as `Type`,
+        // not as a compile-time `T`; the registry guarantees `requestType` implements IMessage.
+        private IMessage? ParseRequest(Type? requestType, ReadOnlyMemory<byte> payload)
         {
             if (requestType is null)
                 return null;
@@ -65,7 +73,19 @@ namespace TemplateTCPServer.Common.Packets
                 return (MessageParser)prop.GetValue(null)!;
             });
 
+            // MessageParser.ParseFrom returns IMessage; the registry has already verified the
+            // type implements IMessage, so this is safe.
             return parser.ParseFrom(payload.Span);
+        }
+
+        // Holds the generated MessageParser<T> for a known compile-time message type, resolved
+        // once per closed generic. Faster and stricter than the by-Type reflection cache.
+        private static class MessageParserCache<T> where T : IMessage<T>
+        {
+            public static readonly MessageParser<T> Parser =
+                (MessageParser<T>)typeof(T)
+                    .GetProperty("Parser", BindingFlags.Public | BindingFlags.Static)!
+                    .GetValue(null)!;
         }
     }
 }

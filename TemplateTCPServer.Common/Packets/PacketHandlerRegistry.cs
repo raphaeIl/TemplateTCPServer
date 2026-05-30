@@ -1,4 +1,5 @@
 using System.Reflection;
+using Google.Protobuf;
 using Microsoft.Extensions.Logging;
 using TemplateTCPServer.Common.Protocol;
 
@@ -35,6 +36,17 @@ namespace TemplateTCPServer.Common.Packets
                     var requestType = method.GetParameters().Length > 0
                         ? method.GetParameters()[0].ParameterType
                         : null;
+
+                    // The dispatcher parses the payload with the protobuf parser, so the request
+                    // type must be a protobuf message. Reject anything else at startup rather than
+                    // failing per-packet at runtime with an opaque "no static Parser" error.
+                    if (requestType is not null && !typeof(IMessage).IsAssignableFrom(requestType))
+                    {
+                        throw new InvalidOperationException(
+                            $"{type.Name}.{method.Name} maps {attr.MsgId} but its request parameter " +
+                            $"'{requestType.Name}' does not implement {nameof(IMessage)}; " +
+                            "packet handlers must take a protobuf message as their first parameter.");
+                    }
 
                     var entry = new HandlerEntry(type, method, requestType, attr.ReplyMsgId);
                     if (!_map.TryAdd(attr.MsgId, entry))
