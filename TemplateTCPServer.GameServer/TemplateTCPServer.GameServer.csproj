@@ -17,7 +17,7 @@
          (forked grpc_csharp_plugin, shipped in the package). The protobuf MESSAGES are
          generated in Common so low-level projects can share them without a dependency
          cycle (see TcpProtoDir below + Common.csproj <Protobuf>). -->
-    <PackageReference Include="Raphael.Tcp.Tools" Version="1.1.2">
+    <PackageReference Include="Raphael.Tcp.Tools" Version="1.2.0">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
@@ -28,6 +28,7 @@
     <TcpIPacketHandler>TemplateTCPServer.Common.Packets.IPacketHandler</TcpIPacketHandler>
     <TcpPacketHandlerAttr>TemplateTCPServer.Common.Packets.PacketHandlerAttribute</TcpPacketHandlerAttr>
     <TcpConnection>TemplateTCPServer.Common.Networking.Connection</TcpConnection>
+    <TcpMsgIdPrefix>Msg</TcpMsgIdPrefix>
     <!-- TCP base (*Tcp.cs) output dir (package default is also Generated/; explicit here). -->
     <TcpOutDir>$(MSBuildProjectDirectory)\Generated</TcpOutDir>
     <!-- The .proto files now live in Common (single source of truth, shared by the

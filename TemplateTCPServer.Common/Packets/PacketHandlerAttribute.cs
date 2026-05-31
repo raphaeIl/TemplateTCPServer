@@ -6,16 +6,16 @@ namespace TemplateTCPServer.Common.Packets
     public sealed class PacketHandlerAttribute : Attribute
     {
         // MsgId of the inbound packet this method handles.
-        public MsgId MsgId { get; }
+        public MsgId ReqMsgId { get; }
 
         // MsgId used to frame the method's return value as a reply packet.
         // None (the default) means the method returns nothing to send.
-        public MsgId ReplyMsgId { get; }
+        public MsgId RespMsgId { get; }
 
-        public PacketHandlerAttribute(MsgId msgId, MsgId replyMsgId = MsgId.None)
+        public PacketHandlerAttribute(MsgId reqMsgId, MsgId respMsgId = MsgId.None)
         {
-            MsgId = msgId;
-            ReplyMsgId = replyMsgId;
+            ReqMsgId = reqMsgId;
+            RespMsgId = respMsgId;
         }
     }
 }

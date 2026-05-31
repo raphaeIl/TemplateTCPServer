@@ -43,21 +43,21 @@ namespace TemplateTCPServer.Common.Packets
                     if (requestType is not null && !typeof(IMessage).IsAssignableFrom(requestType))
                     {
                         throw new InvalidOperationException(
-                            $"{type.Name}.{method.Name} maps {attr.MsgId} but its request parameter " +
+                            $"{type.Name}.{method.Name} maps {attr.ReqMsgId} but its request parameter " +
                             $"'{requestType.Name}' does not implement {nameof(IMessage)}; " +
                             "packet handlers must take a protobuf message as their first parameter.");
                     }
 
-                    var entry = new HandlerEntry(type, method, requestType, attr.ReplyMsgId);
-                    if (!_map.TryAdd(attr.MsgId, entry))
+                    var entry = new HandlerEntry(type, method, requestType, attr.RespMsgId);
+                    if (!_map.TryAdd(attr.ReqMsgId, entry))
                     {
                         logger?.LogWarning("Duplicate handler for {MsgId}; {Type}.{Method} ignored",
-                            attr.MsgId, type.Name, method.Name);
+                            attr.ReqMsgId, type.Name, method.Name);
                         continue;
                     }
 
                     logger?.LogInformation("Mapped {MsgId} -> {Type}.{Method} (reply: {Reply})",
-                        attr.MsgId, type.Name, method.Name, attr.ReplyMsgId);
+                        attr.ReqMsgId, type.Name, method.Name, attr.RespMsgId);
                 }
             }
         }

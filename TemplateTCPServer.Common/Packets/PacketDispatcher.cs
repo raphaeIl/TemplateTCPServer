@@ -42,6 +42,18 @@ namespace TemplateTCPServer.Common.Packets
                     connection.Send(new RawPacket(entry.ReplyMsgId, reply.ToByteArray()));
                 }
             }
+            catch (TargetInvocationException ex) when (ex.InnerException is NotImplementedException notImplemented)
+            {
+                logger.LogWarning(notImplemented,
+                    "Handler {Type}.{Method} was called for {MsgId} but is not implemented",
+                    entry.Type.Name, entry.Method.Name, packet.MsgId);
+            }
+            catch (NotImplementedException ex)
+            {
+                logger.LogWarning(ex,
+                    "Handler {Type}.{Method} was called for {MsgId} but is not implemented",
+                    entry.Type.Name, entry.Method.Name, packet.MsgId);
+            }
             catch (Exception ex)
             {
                 var actual = (ex as TargetInvocationException)?.InnerException ?? ex;
