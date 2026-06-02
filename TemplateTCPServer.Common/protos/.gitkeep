@@ -1,2 +1,0 @@
-# Keeps this directory present in a fresh clone — the build reads operator-supplied
-# *.proto files dropped here (ignored via the root .gitignore). Do not commit protos.

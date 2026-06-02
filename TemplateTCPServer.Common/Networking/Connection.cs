@@ -9,7 +9,7 @@ namespace TemplateTCPServer.Common.Networking
         TcpClient client,
         PacketDispatcher dispatcher,
         IPacketSerializer serializer,
-        ConnectionManager manager,
+        ConnectionManager connectionManager,
         ILogger logger)
     {
         private readonly NetworkStream _stream = client.GetStream();
@@ -18,7 +18,7 @@ namespace TemplateTCPServer.Common.Networking
 
         public void Run()
         {
-            manager.Add(this);
+            connectionManager.Add(this);
             logger.LogInformation("{Id} connected", Id);
 
             try
@@ -38,7 +38,7 @@ namespace TemplateTCPServer.Common.Networking
             }
             finally
             {
-                manager.Remove(this);
+                connectionManager.Remove(this);
                 client.Close();
                 logger.LogInformation("{Id} disconnected", Id);
             }

@@ -8,15 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Runtime support for protobuf message types. The messages are GENERATED HERE
-         (see <Protobuf> item below) so that low-level projects (e.g. Utils) and
-         GameServer can all share them without a GameServer->Utils->Common cycle.
-         The TCP service *bases* are generated separately in GameServer (where the
-         handlers live) via Raphael.Tcp.Tools. -->
+    <!-- Runtime protobuf APIs used by PacketDispatcher (IMessage, MessageParser). -->
     <PackageReference Include="Google.Protobuf" Version="3.28.3" />
-    <!-- Build-time only: runs the C# message codegen for the <Protobuf> item below.
-         PrivateAssets=all keeps it from flowing to consumers as a dependency. -->
-    <PackageReference Include="Grpc.Tools" Version="2.67.0" PrivateAssets="all" />
 
     <!-- TCP framework (Hosting/Networking/Packets). The hosted service implements
          IHostedService, reads GameServer:Port from config, dispatches packets through
@@ -26,17 +19,6 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="8.0.2" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <!-- Operators drop .proto files into protos/ (git-ignored). Grpc.Tools generates
-         the C# MESSAGE types here (GrpcServices=None -> no gRPC stubs). OutputDir puts
-         them in Generated/ alongside the source tree instead of the obj/ default.
-         The csharp_namespace in the .proto keeps the types in TemplateTCPServer.Common.Protocol. -->
-    <Protobuf Include="protos\**\*.proto" GrpcServices="None" OutputDir="Generated" />
-    <!-- Grpc.Tools adds the generated .cs as a Compile item itself; keep it out of the
-         SDK's default **/*.cs glob too, or it gets compiled twice (CS2002). -->
-    <Compile Remove="Generated\**\*.cs" />
   </ItemGroup>
 
 </Project>
