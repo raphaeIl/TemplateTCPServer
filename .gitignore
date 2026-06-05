@@ -60,7 +60,7 @@ project.nuget.cache
 # out-of-band and not committed. The protos/ dir keeps a .gitignore so it survives
 # a fresh clone (the build reads from it); Generated/ dirs are remade by the build.
 **/Generated/
-**/protos/*.proto
+*.proto
 
 # Local config / secrets (never commit credentials or environment overrides)
 appsettings.Local.json

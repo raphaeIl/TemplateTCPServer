@@ -3,6 +3,7 @@ using Serilog;
 using TemplateTCPServer.Data;
 using TemplateTCPServer.GameServer;
 using TemplateTCPServer.SDKServer;
+using TemplateTCPServer.Table;
 
 namespace TemplateTCPServer
 {
@@ -38,6 +39,9 @@ namespace TemplateTCPServer
 
                 // ---- HTTP side: SDK login/config ----
                 builder.Services.AddSdkServer();
+
+                // ---- table loader: protobuf .bytes file loading + caching ----
+                builder.Services.AddTableService(builder.Configuration);
 
                 // ---- TCP side: the main game server (hosted background service) ----
                 builder.Services.AddGameServer();

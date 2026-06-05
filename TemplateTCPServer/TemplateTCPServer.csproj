@@ -17,6 +17,7 @@
     <ProjectReference Include="..\TemplateTCPServer.Data\TemplateTCPServer.Data.csproj" />
     <ProjectReference Include="..\TemplateTCPServer.GameServer\TemplateTCPServer.GameServer.csproj" />
     <ProjectReference Include="..\TemplateTCPServer.SDKServer\TemplateTCPServer.SDKServer.csproj" />
+    <ProjectReference Include="..\TemplateTCPServer.Table\TemplateTCPServer.Table.csproj" />
   </ItemGroup>
 
 </Project>
