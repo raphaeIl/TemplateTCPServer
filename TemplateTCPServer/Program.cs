@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using NTRSimulator.Common.Table;
 using Serilog;
 using TemplateTCPServer.Data;
 using TemplateTCPServer.GameServer;
@@ -41,8 +42,7 @@ namespace TemplateTCPServer
                 builder.Services.AddSdkServer();
 
                 // ---- table loader: protobuf .bytes file loading + caching ----
-                builder.Services.AddTableService(builder.Configuration);
-
+                builder.Services.AddTableService();
                 // ---- TCP side: the main game server (hosted background service) ----
                 builder.Services.AddGameServer();
 
@@ -53,6 +53,7 @@ namespace TemplateTCPServer
                 app.MapControllers();
 
                 app.Run();
+
             }
             catch (Exception ex)
             {
